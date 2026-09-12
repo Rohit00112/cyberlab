@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.uv/
+
+# Builds
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# Tests / coverage
+coverage/
+.coverage
+htmlcov/
+.playwright/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Docker / infra ephemeral
+*.pid

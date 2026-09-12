@@ -1,0 +1,116 @@
+name: cyberlab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cyberlab
+      POSTGRES_PASSWORD: cyberlab
+      POSTGRES_DB: cyberlab
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberlab"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: cyberlab
+      KC_DB_PASSWORD: cyberlab
+      KC_HOSTNAME: localhost
+      KC_HTTP_PORT: 8080
+      KC_PROXY_HEADERS: xforwarded
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /realms/cyberlab/.well-known/openid-configuration HTTP/1.0\\r\\n\\r\\n\" >&3; grep -qi \"HTTP/1.0 200\" <&3'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    ports:
+      - "8080:8080"
+
+  api:
+    build:
+      context: ./apps/api
+      target: dev
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab@postgres:5432/cyberlab
+      REDIS_URL: redis://redis:6379/0
+      OIDC_ISSUER_URL: http://localhost:8080/realms/cyberlab
+      OIDC_WELL_KNOWN_URL: http://keycloak:8080/realms/cyberlab/.well-known/openid-configuration
+      OIDC_CLIENT_ID: api
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-dev-secret-change-me}
+    volumes:
+      - ./apps/api:/app
+      - /app/.venv
+      # Docker socket for lab orchestration (Phase 2+). Scoped and read-mostly:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./apps/web
+      target: dev
+    command: ["pnpm", "dev"]
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8000/api/v1
+      NEXT_PUBLIC_KEYCLOAK_ISSUER: http://localhost:8080/realms/cyberlab
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: web
+      NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI: http://localhost:3000/auth/callback
+      CI: "true"
+      NPM_CONFIG_CONFIRM_MODULES_PURGE: "false"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  redisdata:
+  web_node_modules:
