@@ -46,3 +46,24 @@ export function difficultyLabel(value: Difficulty): string {
 export function challengePointsLabel(challenge: Challenge): string {
   return `${challenge.points} pts`;
 }
+
+export interface FlagSubmitResult {
+  correct: boolean;
+  points: number;
+  already_solved: boolean;
+  message: string;
+}
+
+export interface UserStats {
+  points: number;
+  solved_count: number;
+  attempts: number;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  user_id: string;
+  display_name?: string | null;
+  points: number;
+  solved_count: number;
+}

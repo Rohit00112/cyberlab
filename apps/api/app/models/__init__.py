@@ -2,4 +2,5 @@
 from app.db.base import Base  # noqa: F401
 from app.models.audit_logs import AuditLog  # noqa: F401
 from app.models.challenges import Challenge  # noqa: F401
+from app.models.submissions import Submission  # noqa: F401
 from app.models.users import User  # noqa: F401

@@ -1,14 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { difficultyLabel, type Challenge } from "@/lib/challenges/types";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ApiError, api } from "@/lib/api";
+import {
+  difficultyLabel,
+  type Challenge,
+  type FlagSubmitResult,
+} from "@/lib/challenges/types";
 
 export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
   const [revealedHints, setRevealedHints] = useState(0);
+  const [flag, setFlag] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<FlagSubmitResult | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!flag.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      const res = await api.post<FlagSubmitResult>(
+        `/challenges/${challenge.id}/submissions`,
+        { flag },
+      );
+      setResult(res);
+      if (res.correct) setFlag("");
+    } catch (err) {
+      const message = err instanceof ApiError ? (err.detail ?? "Submission failed") : "Network error";
+      setResult({ correct: false, points: 0, already_solved: false, message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -88,6 +117,44 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
         </div>
 
         <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Submit flag</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={onSubmit} className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`flag-${challenge.id}`}>Flag</Label>
+                  <Input
+                    id={`flag-${challenge.id}`}
+                    value={flag}
+                    onChange={(e) => setFlag(e.target.value)}
+                    placeholder={challenge.flag_format ?? "IIC{...}"}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={submitting || !flag.trim()}>
+                  {submitting ? "Checking…" : "Submit"}
+                </Button>
+                {result ? (
+                  <p
+                    className={`text-sm ${
+                      result.correct ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+                    }`}
+                    aria-live="polite"
+                  >
+                    {result.correct
+                      ? result.already_solved
+                        ? `Already solved — ${challenge.points} pts already awarded`
+                        : `Correct! +${result.points} pts`
+                      : result.message}
+                  </p>
+                ) : null}
+              </form>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardContent className="space-y-3 pt-2">
               <Button className="w-full" disabled>
