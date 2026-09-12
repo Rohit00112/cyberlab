@@ -1,0 +1,37 @@
+"use client";
+
+import Link from "next/link";
+
+import { useAuth } from "@/components/providers/auth-provider";
+
+export function AppNav() {
+  const { user, logout } = useAuth();
+
+  return (
+    <header className="border-b">
+      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
+        <Link href="/dashboard" className="font-semibold">
+          IIC CyberLab
+        </Link>
+        <nav className="flex items-center gap-4 text-sm">
+          <Link href="/dashboard" className="hover:underline">
+            Dashboard
+          </Link>
+          <Link href="/challenges" className="hover:underline">
+            Challenges
+          </Link>
+          <Link href="/leaderboard" className="hover:underline">
+            Leaderboard
+          </Link>
+          <Link href="/profile" className="hover:underline">
+            Profile
+          </Link>
+          <span className="text-muted-foreground">{user?.display_name ?? user?.email}</span>
+          <button onClick={logout} className="text-muted-foreground hover:text-foreground">
+            Sign out
+          </button>
+        </nav>
+      </div>
+    </header>
+  );
+}

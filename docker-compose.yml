@@ -33,7 +33,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
-    command: ["start-dev", "--import-realm"]
+    command: ["start-dev"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
@@ -42,8 +42,9 @@ services:
       KC_DB_USERNAME: cyberlab
       KC_DB_PASSWORD: cyberlab
       KC_HOSTNAME: localhost
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
       KC_HTTP_PORT: 8080
-      KC_PROXY_HEADERS: xforwarded
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,7 +54,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /realms/cyberlab/.well-known/openid-configuration HTTP/1.0\\r\\n\\r\\n\" >&3; grep -qi \"HTTP/1.0 200\" <&3'",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /realms/cyberlab/.well-known/openid-configuration HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3; grep -qi \"HTTP/1.0 200\" <&3'",
         ]
       interval: 10s
       timeout: 5s
@@ -99,7 +100,9 @@ services:
       NEXT_PUBLIC_API_BASE: http://localhost:8000/api/v1
       NEXT_PUBLIC_KEYCLOAK_ISSUER: http://localhost:8080/realms/cyberlab
       NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: web
-      NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI: http://localhost:3000/auth/callback
+      NEXT_PUBLIC_WEB_ORIGIN: http://localhost:3000
+      KEYCLOAK_INTERNAL_ISSUER: http://keycloak:8080/realms/cyberlab
+      API_INTERNAL_BASE: http://api:8000/api/v1
       CI: "true"
       NPM_CONFIG_CONFIRM_MODULES_PURGE: "false"
     volumes:
