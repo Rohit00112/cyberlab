@@ -1,8 +1,11 @@
 "use client";
 
+import Link from "next/link";
+
 import { AppNav } from "@/components/app-nav";
 import { RequireAuth } from "@/components/providers/require-auth";
 import { useAuth } from "@/components/providers/auth-provider";
+import { Button } from "@/components/ui/button";
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -15,8 +18,13 @@ export default function DashboardPage() {
           Welcome, {user?.display_name ?? "student"}
         </h1>
         <p className="mt-2 text-muted-foreground">
-          Dashboard content arrives with the challenge catalogue (Stage 3/6).
+          Browse the catalogue to start working on challenges.
         </p>
+        <div className="mt-4">
+          <Link href="/challenges">
+            <Button>Browse challenges</Button>
+          </Link>
+        </div>
       </main>
     </RequireAuth>
   );

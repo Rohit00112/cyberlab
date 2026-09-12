@@ -24,7 +24,9 @@ def _make_app(user: CurrentUser) -> TestClient:
     app.dependency_overrides[get_current_user] = fake_current_user
 
     @app.get("/admin-challenge")
-    async def admin_challenge(_=Depends(require_permission("challenge.edit"))):
+    async def admin_challenge(
+        _=Depends(require_permission("challenge.edit")),  # noqa: B008
+    ):
         return {"ok": True}
 
     return TestClient(app)

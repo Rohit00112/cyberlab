@@ -16,6 +16,6 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/health/db")
-async def health_db(db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def health_db(db: AsyncSession = Depends(get_db)) -> dict[str, str]:  # noqa: B008
     await db.execute(text("SELECT 1"))
     return {"status": "ok", "database": "connected"}

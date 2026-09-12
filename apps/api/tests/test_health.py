@@ -6,9 +6,9 @@ import pytest
 @pytest.fixture
 def client():
     """Placeholder; replaced by a real TestClient in Stage 2+."""
-    from app.main import app
-
     from fastapi.testclient import TestClient
+
+    from app.main import app
 
     with TestClient(app) as c:
         yield c

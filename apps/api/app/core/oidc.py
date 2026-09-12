@@ -32,7 +32,9 @@ class OidcProvider:
         self._external_base = settings.oidc_issuer_url.rstrip("/")
         well_known = settings.oidc_well_known_url
         suffix = "/.well-known/openid-configuration"
-        self._internal_base = well_known[: -len(suffix)] if well_known.endswith(suffix) else well_known
+        self._internal_base = (
+            well_known[: -len(suffix)] if well_known.endswith(suffix) else well_known
+        )
 
     def _internal(self, url: str) -> str:
         if not url or self._external_base not in url:
