@@ -199,3 +199,15 @@ export interface UserProfile {
   attempts: number;
   recent_solves: ProfileSolve[];
 }
+
+export interface AdminUser {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  roles: string[];
+  is_active: boolean;
+  points: number;
+  solved_count: number;
+  attempts: number;
+  created_at: string | null;
+}

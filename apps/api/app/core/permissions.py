@@ -3,10 +3,11 @@
 Granular permissions are derived from Keycloak realm roles server-side.
 ``sysadmin`` has the wildcard; everything else is scoped per role.
 """
+
 from __future__ import annotations
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "sysadmin": {"*"},
+    "sysadmin": {"*", "user.view", "user.manage"},
     "faculty": {
         "challenge.view",
         "challenge.create",

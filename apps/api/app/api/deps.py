@@ -1,4 +1,5 @@
 """Shared API dependencies: identity and authorization."""
+
 from __future__ import annotations
 
 import uuid
@@ -46,6 +47,11 @@ async def get_current_user(
         ) from None
 
     user = await sync_user(db, claims)
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended — contact an administrator",
+        )
     roles = list(claims.get("realm_access", {}).get("roles", []))
 
     seen: set[str] = set()

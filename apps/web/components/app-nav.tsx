@@ -39,6 +39,11 @@ export function AppNav() {
               Manage
             </Link>
           ) : null}
+          {hasPermission("user.view") ? (
+            <Link href="/admin/users" className="hover:underline">
+              Users
+            </Link>
+          ) : null}
           {hasPermission("audit.view") ? (
             <Link href="/admin/audit" className="hover:underline">
               Audit

@@ -32,6 +32,15 @@ def _student(sub: str = "profile-student") -> CurrentUser:
     )
 
 
+def _sysadmin(sub: str = "profile-sysadmin") -> CurrentUser:
+    return CurrentUser(
+        id=uuid.uuid4(),
+        keycloak_sub=sub,
+        roles=["sysadmin"],
+        permissions=["*"],
+    )
+
+
 @pytest.fixture
 async def test_db():
     url = get_settings().database_url
@@ -56,7 +65,9 @@ def _make_client(factory: SessionFactory, user: CurrentUser | None = None):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-async def _ensure_user(factory: SessionFactory, user: CurrentUser) -> None:
+async def _ensure_user(
+    factory: SessionFactory, user: CurrentUser, *, roles: list[str] | None = None
+) -> None:
     async with factory() as db:
         existing = await db.get(User, user.id)
         if existing is None:
@@ -66,6 +77,7 @@ async def _ensure_user(factory: SessionFactory, user: CurrentUser) -> None:
                     keycloak_sub=user.keycloak_sub,
                     email=f"{user.keycloak_sub}@cyberlab.test",
                     display_name=f"Test {user.roles[0].title()}",
+                    roles=roles if roles is not None else user.roles,
                 )
             )
             await db.commit()
@@ -154,4 +166,80 @@ async def test_profile_requires_auth(test_db):
     async with _make_client(test_db) as client:
         res = await client.get("/api/v1/users/me")
         assert res.status_code == 401
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_lists_users(test_db):
+    admin = _sysadmin()
+    target = _student(sub=f"target-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, admin)
+    await _ensure_user(test_db, target)
+    async with _make_client(test_db, admin) as client:
+        res = await client.get("/api/v1/users")
+        assert res.status_code == 200
+        body = res.json()
+        assert any(u["id"] == str(target.id) for u in body)
+        row = next(u for u in body if u["id"] == str(target.id))
+        assert row["roles"] == ["student"]
+        assert row["is_active"] is True
+        assert row["points"] == 0
+        assert row["solved_count"] == 0
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_suspend_activate(test_db):
+    admin = _sysadmin()
+    target = _student(sub=f"suspend-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, admin)
+    await _ensure_user(test_db, target)
+    async with _make_client(test_db, admin) as client:
+        res = await client.patch(f"/api/v1/users/{target.id}", json={"is_active": False})
+        assert res.status_code == 200
+        assert res.json()["is_active"] is False
+
+        res = await client.patch(f"/api/v1/users/{target.id}", json={"is_active": True})
+        assert res.status_code == 200
+        assert res.json()["is_active"] is True
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_suspended_user_forbidden(test_db, monkeypatch):
+    admin = _sysadmin()
+    target = _student(sub=f"blocked-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, admin)
+    await _ensure_user(test_db, target)
+    async with _make_client(test_db, admin) as client:
+        await client.patch(f"/api/v1/users/{target.id}", json={"is_active": False})
+    app.dependency_overrides.clear()
+
+    # Exercise the real get_current_user dependency path: fake OIDC decode but
+    # keep the suspension check, by calling the dependency directly.
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    import app.api.deps as deps_module
+
+    async def _fake_decode(token):
+        assert token == "blocked-token"
+        return {"sub": target.keycloak_sub, "realm_access": {"roles": ["student"]}}
+
+    monkeypatch.setattr(deps_module.oidc, "decode_token", _fake_decode)
+
+    async with test_db() as db:
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="blocked-token")
+        with pytest.raises(HTTPException) as excinfo:
+            await deps_module.get_current_user(creds, db)
+        assert excinfo.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_student_cannot_access_directory(test_db):
+    student = _student(sub=f"nosys-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, student)
+    async with _make_client(test_db, student) as client:
+        res = await client.get("/api/v1/users")
+        assert res.status_code == 403
     app.dependency_overrides.clear()
