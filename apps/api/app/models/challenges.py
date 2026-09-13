@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -35,6 +35,12 @@ class Challenge(Base):
     )
     status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    difficulty_score: Mapped[float] = mapped_column(
+        Float, default=0.2, server_default=text("0.2"), nullable=False
+    )
+    difficulty_scored_at_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
