@@ -37,3 +37,6 @@ logs/
 
 # Docker / infra ephemeral
 *.pid
+
+# Isolated git worktrees
+.worktrees/

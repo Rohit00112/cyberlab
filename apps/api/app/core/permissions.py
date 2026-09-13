@@ -7,7 +7,7 @@ Granular permissions are derived from Keycloak realm roles server-side.
 from __future__ import annotations
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "sysadmin": {"*", "user.view", "user.manage"},
+    "sysadmin": {"*", "user.view", "user.manage", "learning_path.manage"},
     "faculty": {
         "challenge.view",
         "challenge.create",
@@ -25,6 +25,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "skill.manage",
         "badge.view",
         "badge.manage",
+        "learning_path.manage",
+        "learning_path.view",
     },
     "competition_organizer": {
         "competition.create",
@@ -33,6 +35,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "analytics.view",
         "skill.view",
         "badge.view",
+        "learning_path.manage",
+        "learning_path.view",
     },
     "lab_admin": {
         "lab.admin",
@@ -59,6 +63,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "submission.create",
         "skill.view",
         "badge.view",
+        "learning_path.view",
     },
 }
 
