@@ -15,6 +15,7 @@ from app.schemas.competition import (
     CompetitionCreate,
     CompetitionLeaderboardOut,
     CompetitionOut,
+    CompetitionResultsOut,
     CompetitionSummary,
     CompetitionTransitionIn,
     CompetitionUpdate,
@@ -209,3 +210,14 @@ async def unfreeze_leaderboard(
 ):
     competition = await _get_competition(db, competition_id)
     return await competition_service.freeze(db, competition, user, frozen=False, request=request)
+
+
+@router.get("/competitions/{competition_id}/results", response_model=CompetitionResultsOut)
+async def competition_results(
+    competition_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("competition.manage"))],
+):
+    """Exported rankings + per-entity solves for a competition (PRD §24)."""
+    competition = await _get_competition(db, competition_id)
+    return await competition_service.competition_results(db, competition)

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.flags import hash_flag, slugify
 from app.db.base import SessionLocal
@@ -18,7 +17,9 @@ from app.models.users import User
 STARTER_CHALLENGES: list[dict] = [
     {
         "title": "Basic Linux Investigation",
-        "description": "Find a suspicious file hidden in the filesystem and recover the flag from it.",
+        "description": (
+            "Find a suspicious file hidden in the filesystem and recover the flag from it."
+        ),
         "instructions": (
             "Connect to the provided lab container. A file named `flag.txt` is not where it "
             "should be. Search for it, inspect ownership, timestamps and file contents, then "
@@ -149,7 +150,10 @@ STARTER_CHALLENGES: list[dict] = [
         "estimated_minutes": 20,
         "skills": ["Email headers", "Phishing analysis", "SPF/DKIM awareness"],
         "prerequisites": [],
-        "hints": ["`Received:` headers reveal the real sending path.", "Compare `From` with `Return-Path`."],
+        "hints": [
+            "`Received:` headers reveal the real sending path.",
+            "Compare `From` with `Return-Path`.",
+        ],
         "flag": "IIC{spoofed-domain}",
         "flag_format": "IIC{...}",
         "environment_type": "none",

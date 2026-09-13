@@ -115,6 +115,9 @@ async def submit_flag(
     )
 
     if correct:
+        from app.services.badges import grant_eligible_badges
+
+        await grant_eligible_badges(db, user_id, request=request)
         return FlagSubmitResult(
             correct=True, points=submission.earned_points, message="Correct flag!"
         )

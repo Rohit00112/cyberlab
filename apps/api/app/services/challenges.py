@@ -14,6 +14,7 @@ from app.models.challenges import Challenge
 from app.models.users import User
 from app.schemas.challenge import AuthorOut, ChallengeCreate, ChallengeOut, ChallengeUpdate
 from app.services.hints import revealed_counts
+from app.services.skills import sync_challenge_skills
 from app.services.users import record_audit
 
 
@@ -114,6 +115,7 @@ async def create_challenge(
     await record_audit(
         db, event="challenge.create", user_id=author_id, target_id=challenge.slug, request=request
     )
+    await sync_challenge_skills(db, challenge.id, challenge.skills)
     authors = await _authors_map(db)
     return _to_out(challenge, authors)
 
@@ -142,6 +144,8 @@ async def update_challenge(
     await record_audit(
         db, event="challenge.update", user_id=user_id, target_id=challenge.slug, request=request
     )
+    if "skills" in updates:
+        await sync_challenge_skills(db, challenge.id, challenge.skills)
     authors = await _authors_map(db)
     return _to_out(challenge, authors)
 

@@ -30,6 +30,8 @@ from app.schemas.competition import (
     CompetitionCreate,
     CompetitionLeaderboardEntry,
     CompetitionOut,
+    CompetitionResultsEntry,
+    CompetitionResultsOut,
     CompetitionSummary,
     CompetitionUpdate,
     ParticipantSelf,
@@ -193,6 +195,18 @@ async def transition(
         details={"action": action, "from": from_status, "to": to_status},
         request=request,
     )
+    if to_status == "finished":
+        from app.services.badges import grant_eligible_badges
+
+        participant_ids = (
+            await db.scalars(
+                select(CompetitionParticipant.user_id).where(
+                    CompetitionParticipant.competition_id == competition.id
+                )
+            )
+        ).all()
+        for participant_id in participant_ids:
+            await grant_eligible_badges(db, participant_id, request=request)
     return await _to_out(db, competition, user=user)
 
 
@@ -523,6 +537,83 @@ async def leaderboard(
     for index, entry in enumerate(ranked, start=1):
         entry.rank = index
     return ranked[:limit]
+
+
+async def competition_results(
+    db: AsyncSession,
+    competition: Competition,
+) -> CompetitionResultsOut:
+    """Full leaderboard with per-entity solved challenge slugs for export (PRD §24)."""
+    entries = await leaderboard(db, competition)
+
+    slug_rows = (
+        await db.execute(
+            select(Challenge.id, Challenge.slug)
+            .join(CompetitionChallenge, CompetitionChallenge.challenge_id == Challenge.id)
+            .where(CompetitionChallenge.competition_id == competition.id)
+        )
+    ).all()
+    slugs = {challenge_id: slug for challenge_id, slug in slug_rows}
+
+    participant_rows = (
+        await db.execute(
+            select(CompetitionParticipant.user_id, CompetitionParticipant.team_id).where(
+                CompetitionParticipant.competition_id == competition.id
+            )
+        )
+    ).all()
+    entity_of = {
+        user_id: (("team", team_id) if team_id else ("user", user_id))
+        for user_id, team_id in participant_rows
+    }
+    user_ids = list(entity_of)
+    challenge_ids = list(slugs)
+
+    start = competition.start_at
+    now = datetime.now(UTC)
+    cutoff = (
+        (competition.frozen_at if competition.freeze_leaderboard else competition.end_at) or now
+    )
+
+    solved_rows = (
+        await db.execute(
+            select(Submission.user_id, Submission.challenge_id)
+            .where(
+                Submission.is_correct.is_(True),
+                Submission.challenge_id.in_(challenge_ids or [uuid.uuid4()]),
+                Submission.user_id.in_(user_ids or [uuid.uuid4()]),
+                *( [Submission.created_at >= start.replace(tzinfo=UTC)] if start else [] ),
+                *( [Submission.created_at <= cutoff.replace(tzinfo=UTC)] if cutoff else [] ),
+            )
+        )
+    ).all()
+    solved_by_entity: dict[uuid.UUID, set[str]] = {}
+    for user_id, challenge_id in solved_rows:
+        _etype, entity_id = entity_of.get(user_id, ("user", user_id))
+        solved_by_entity.setdefault(entity_id, set()).add(slugs.get(challenge_id, ""))
+
+    results: list[CompetitionResultsEntry] = []
+    for entry in entries:
+        results.append(
+            CompetitionResultsEntry(
+                rank=entry.rank,
+                entity_type=entry.entity_type,
+                entity_id=entry.entity_id,
+                display_name=entry.display_name,
+                points=entry.points,
+                solved_count=entry.solved_count,
+                solved_slugs=sorted(
+                    slug for slug in solved_by_entity.get(entry.entity_id, set()) if slug
+                ),
+            )
+        )
+    return CompetitionResultsOut(
+        competition_id=competition.id,
+        slug=competition.slug,
+        title=competition.title,
+        status=competition.status,
+        entries=results,
+    )
 
 
 async def unregister(

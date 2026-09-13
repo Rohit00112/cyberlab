@@ -140,3 +140,21 @@ class CompetitionLeaderboardEntry(BaseModel):
     points: int
     solved_count: int
     last_solve_at: datetime | None = None
+
+
+class CompetitionResultsEntry(BaseModel):
+    rank: int
+    entity_type: str
+    entity_id: uuid.UUID
+    display_name: str
+    points: int
+    solved_count: int
+    solved_slugs: list[str] = Field(default_factory=list)
+
+
+class CompetitionResultsOut(BaseModel):
+    competition_id: uuid.UUID
+    slug: str
+    title: str
+    status: str
+    entries: list[CompetitionResultsEntry] = Field(default_factory=list)
