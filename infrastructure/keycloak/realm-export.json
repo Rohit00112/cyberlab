@@ -1,7 +1,7 @@
 {
   "realm": "cyberlab",
   "enabled": true,
-  "registrationAllowed": false,
+  "registrationAllowed": true,
   "registrationEmailAsUsername": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
@@ -10,16 +10,29 @@
   "accessTokenLifespan": 600,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 28800,
-  "roles": {
-    "realm": [
-      { "name": "sysadmin", "description": "Full platform administration" },
-      { "name": "faculty", "description": "Challenge authoring and analytics" },
-      { "name": "competition_organizer", "description": "Manage competitions, teams, scoring" },
-      { "name": "lab_admin", "description": "Manage environments, templates, resources" },
-      { "name": "researcher", "description": "Access approved research analytics" },
-      { "name": "student", "description": "Solve challenges and launch labs" }
-    ]
+  "defaultRole": {
+    "name": "default-roles-cyberlab",
+    "description": "${role_default-roles}",
+    "composite": true
   },
+  "roles": {
+      "realm": [
+        { "name": "sysadmin", "description": "Full platform administration" },
+        { "name": "faculty", "description": "Challenge authoring and analytics" },
+        { "name": "competition_organizer", "description": "Manage competitions, teams, scoring" },
+        { "name": "lab_admin", "description": "Manage environments, templates, resources" },
+        { "name": "researcher", "description": "Access approved research analytics" },
+        { "name": "student", "description": "Solve challenges and launch labs" },
+        {
+          "name": "default-roles-cyberlab",
+          "description": "${role_default-roles}",
+          "composite": true,
+          "composites": {
+            "realm": ["student"]
+          }
+        }
+      ]
+    },
   "clients": [
     {
       "clientId": "web",
