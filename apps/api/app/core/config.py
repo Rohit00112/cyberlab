@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Lab / infrastructure (used from Phase 2 onward)
     labs_network_name: str = "cyberlab_labs"
     lab_default_expiry_minutes: int = 60
+    lab_max_instances_per_user: int = 2
+    lab_image: str = "alpine:3.20"
+    lab_docker_socket: str = "/var/run/docker.sock"
+    lab_provisioning_timeout_minutes: int = 10
 
     @property
     def cors_origin_list(self) -> list[str]:

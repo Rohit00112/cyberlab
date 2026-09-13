@@ -13,6 +13,7 @@ import {
   type Challenge,
   type FlagSubmitResult,
 } from "@/lib/challenges/types";
+import { LabPanel } from "@/components/labs/lab-panel";
 
 export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
   const [revealedHints, setRevealedHints] = useState(challenge.hints_revealed ?? 0);
@@ -170,15 +171,13 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
           </Card>
 
           <Card>
-            <CardContent className="space-y-3 pt-2">
-              <Button className="w-full" disabled>
-                Launch Lab
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                Lab infrastructure arrives in a later stage.
-              </p>
+            <CardHeader>
+              <CardTitle>Lab environment</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <LabPanel challenge={challenge} />
               {challenge.flag_format ? (
-                <p className="text-xs text-muted-foreground">
+                <p className="mt-3 text-xs text-muted-foreground">
                   Flag format: <code className="text-foreground">{challenge.flag_format}</code>
                 </p>
               ) : null}

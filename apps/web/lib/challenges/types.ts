@@ -145,3 +145,25 @@ export const AUDIT_EVENTS = [
   "submission.solve",
   "hint.reveal",
 ] as const;
+
+export interface Lab {
+  id: string;
+  challenge_id: string;
+  challenge_slug: string | null;
+  status: "provisioning" | "running" | "stopped" | "expired" | "error";
+  network_name: string | null;
+  connection_hint: string | null;
+  expires_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  challenge_title: string | null;
+}
+
+export const LAB_STATUS_LABELS: Record<Lab["status"], string> = {
+  provisioning: "Provisioning",
+  running: "Running",
+  stopped: "Stopped",
+  expired: "Expired",
+  error: "Error",
+};

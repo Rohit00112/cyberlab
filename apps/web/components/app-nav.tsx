@@ -24,6 +24,11 @@ export function AppNav() {
           <Link href="/leaderboard" className="hover:underline">
             Leaderboard
           </Link>
+          {hasPermission("lab.launch") ? (
+            <Link href="/labs" className="hover:underline">
+              My Labs
+            </Link>
+          ) : null}
           {hasPermission("analytics.view") ? (
             <Link href="/analytics" className="hover:underline">
               Analytics

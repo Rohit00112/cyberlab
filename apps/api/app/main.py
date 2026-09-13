@@ -11,6 +11,7 @@ from app.api.auth import router as auth_router
 from app.api.challenges import router as challenges_router
 from app.api.health import router as health_router
 from app.api.hints import router as hints_router
+from app.api.labs import router as labs_router
 from app.api.leaderboard import router as leaderboard_router
 from app.api.submissions import router as submissions_router
 from app.core.config import get_settings
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(challenges_router, prefix="/api/v1")
     app.include_router(submissions_router, prefix="/api/v1")
     app.include_router(hints_router, prefix="/api/v1")
+    app.include_router(labs_router, prefix="/api/v1")
     app.include_router(leaderboard_router, prefix="/api/v1")
     return app
 
