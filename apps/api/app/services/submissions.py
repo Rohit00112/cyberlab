@@ -116,6 +116,10 @@ async def submit_flag(
 
     if correct:
         from app.services.badges import grant_eligible_badges
+        from app.services.skill_profiles import update_profiles_for_solve
+
+        await update_profiles_for_solve(db, user_id=user_id, challenge=challenge)
+        await db.commit()
 
         await grant_eligible_badges(db, user_id, request=request)
         return FlagSubmitResult(

@@ -9,6 +9,9 @@ from app.db.base import Base
 from app.models import Challenge, User
 from app.models.learning_paths import LearningPath, LearningPathStep
 from app.models.skill_profiles import UserSkillProfile
+from app.models.skills import Skill, ChallengeSkill
+from app.api.deps import CurrentUser
+import uuid
 
 
 @pytest.fixture
