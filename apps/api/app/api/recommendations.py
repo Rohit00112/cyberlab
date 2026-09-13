@@ -1,7 +1,6 @@
 """API router for challenge recommendations."""
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends

@@ -1,19 +1,11 @@
 """Unit and integration tests for Phase 5 Adaptive Learning models."""
 
+
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
-from app.db.base import Base
-from app.models import Challenge, User
 from app.models.learning_paths import LearningPath, LearningPathStep
 from app.models.skill_profiles import UserSkillProfile
-from app.models.skills import Skill, ChallengeSkill
-from app.api.deps import CurrentUser
-import uuid
-
-
 
 
 @pytest.mark.asyncio

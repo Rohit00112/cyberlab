@@ -5,13 +5,18 @@ import uuid
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.challenges import Challenge
 from app.models.learning_paths import LearningPath, LearningPathStep
 from app.models.submissions import Submission
-from app.schemas.learning_path import LearningPathCreate, LearningPathDetail, LearningPathStepOut, LearningPathSummary
+from app.schemas.learning_path import (
+    LearningPathCreate,
+    LearningPathDetail,
+    LearningPathStepOut,
+    LearningPathSummary,
+)
 
 
 async def list_published_paths(db: AsyncSession) -> list[LearningPathSummary]:

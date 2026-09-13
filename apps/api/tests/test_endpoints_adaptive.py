@@ -1,9 +1,12 @@
 """Endpoint integration tests for adaptive learning routes."""
 
 import uuid
+
 import pytest
-from app.models import Challenge, User
+
+from app.models import Challenge
 from app.models.learning_paths import LearningPath, LearningPathStep
+
 
 @pytest.mark.asyncio
 async def test_learning_paths_endpoints(student_client, test_db):

@@ -8,9 +8,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.challenges import Challenge
-from app.models.submissions import Submission
 from app.models.skill_profiles import UserSkillProfile
 from app.models.skills import ChallengeSkill, Skill
+from app.models.submissions import Submission
 from app.schemas.recommendation import ChallengeRecommendationOut
 from app.schemas.skill import SkillBrief
 

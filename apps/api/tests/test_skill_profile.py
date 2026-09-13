@@ -2,20 +2,12 @@ import uuid
 from collections.abc import AsyncIterator
 
 import httpx
-import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import CurrentUser, get_current_user
-from app.core.config import get_settings
-from app.core.flags import hash_flag
-from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import Challenge, User
-from app.models.skill_profiles import UserSkillProfile
-from app.models.skills import ChallengeSkill, Skill
-from app.services.skill_profiles import update_profiles_for_solve
+from app.models import User
 
 SessionFactory = async_sessionmaker[AsyncSession]
 

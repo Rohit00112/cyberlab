@@ -1,7 +1,9 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.core.config import get_settings
 from app.db.base import Base
+
 
 @pytest.fixture
 async def test_db():
@@ -17,11 +19,14 @@ async def test_db():
 
 import uuid
 from collections.abc import AsyncIterator
+
 import httpx
+
 from app.api.deps import CurrentUser, get_current_user
 from app.db.session import get_db
 from app.main import app
 from app.models import User
+
 
 def _student(sub: str = "student-sub-test") -> CurrentUser:
     return CurrentUser(

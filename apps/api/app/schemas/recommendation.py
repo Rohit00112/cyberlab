@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import uuid
+
 from pydantic import BaseModel, ConfigDict, Field
+
 from app.schemas.skill import SkillBrief
 
 

@@ -1,18 +1,15 @@
 """Tests for adaptive difficulty and recommendations."""
 
 import uuid
-import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
-from app.db.base import Base
-from app.models import Challenge, User
-from app.models.submissions import Submission
-from app.models.skills import Skill, ChallengeSkill
-from app.models.skill_profiles import UserSkillProfile
+import pytest
+
 from app.core.flags import hash_flag
-from app.services.recommendations import refresh_difficulty_score, get_recommendations
+from app.models import Challenge, User
+from app.models.skill_profiles import UserSkillProfile
+from app.models.skills import ChallengeSkill, Skill
+from app.models.submissions import Submission
+from app.services.recommendations import get_recommendations, refresh_difficulty_score
 
 CORRECT = "IIC{test}"
 

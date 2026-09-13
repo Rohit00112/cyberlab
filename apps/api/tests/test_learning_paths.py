@@ -1,11 +1,14 @@
 """Tests for learning path progress."""
 
 import uuid
+
 import pytest
+
 from app.models import Challenge, User
 from app.models.learning_paths import LearningPath, LearningPathStep
 from app.models.submissions import Submission
 from app.services.learning_paths import get_path_with_progress
+
 
 @pytest.mark.asyncio
 async def test_path_progress_marks_completed_unlocked_locked(test_db):
