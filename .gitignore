@@ -39,4 +39,4 @@ logs/
 *.pid
 
 # Isolated git worktrees
-.worktrees/
+.worktrees/.claude/worktrees/
