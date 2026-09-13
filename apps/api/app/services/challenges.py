@@ -13,6 +13,7 @@ from app.core.permissions import has_permission
 from app.models.challenges import Challenge
 from app.models.users import User
 from app.schemas.challenge import AuthorOut, ChallengeCreate, ChallengeOut, ChallengeUpdate
+from app.services.hints import revealed_counts
 from app.services.users import record_audit
 
 
@@ -26,6 +27,7 @@ async def list_challenges(
     db: AsyncSession,
     user_roles: list[str],
     *,
+    user_id: uuid.UUID | None = None,
     category: str | None = None,
     difficulty: str | None = None,
     status_filter: str | None = None,
@@ -57,12 +59,17 @@ async def list_challenges(
     ).all()
 
     authors = await _authors_map(db)
-    result = [_to_out(c, authors) for c in challenges]
+    counts = await revealed_counts(db, user_id, [c.id for c in challenges]) if user_id else {}
+    result = [_to_out(c, authors, editor=editor, revealed_counts=counts) for c in challenges]
     return result, int(total or 0)
 
 
 async def get_challenge(
-    db: AsyncSession, challenge_id: uuid.UUID, user_roles: list[str]
+    db: AsyncSession,
+    challenge_id: uuid.UUID,
+    user_roles: list[str],
+    *,
+    user_id: uuid.UUID | None = None,
 ) -> ChallengeOut:
     challenge = await db.get(Challenge, challenge_id)
     if challenge is None:
@@ -70,7 +77,8 @@ async def get_challenge(
     if not can_edit(user_roles) and not challenge.is_published:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
     authors = await _authors_map(db)
-    return _to_out(challenge, authors)
+    counts = await revealed_counts(db, user_id, [challenge.id]) if user_id else {}
+    return _to_out(challenge, authors, editor=can_edit(user_roles), revealed_counts=counts)
 
 
 async def create_challenge(
@@ -172,14 +180,31 @@ async def _authors_map(db: AsyncSession) -> dict[str, Any]:
     return {str(row[0]): row[1] for row in rows}
 
 
-def _to_out(challenge: Challenge, authors: dict[str, Any]) -> ChallengeOut:
+def _to_out(
+    challenge: Challenge,
+    authors: dict[str, Any],
+    *,
+    editor: bool = True,
+    revealed_counts: dict[uuid.UUID, int] | None = None,
+) -> ChallengeOut:
     if challenge.skills is None:
         challenge.skills = []
     if challenge.prerequisites is None:
         challenge.prerequisites = []
     if challenge.hints is None:
         challenge.hints = []
+    all_hints = list(challenge.hints)
     out = ChallengeOut.model_validate(challenge)
+    out.hints_count = len(all_hints)
+    out.hint_penalty = challenge.hint_penalty or 0
+    if editor:
+        # Editors manage content and see every hint.
+        out.hints = all_hints
+        out.hints_revealed = 0
+    else:
+        revealed = (revealed_counts or {}).get(challenge.id, 0)
+        out.hints_revealed = revealed
+        out.hints = all_hints[:revealed]
     display = authors.get(str(challenge.author_id))
     out.author = (
         AuthorOut(id=challenge.author_id, display_name=display) if challenge.author_id else None

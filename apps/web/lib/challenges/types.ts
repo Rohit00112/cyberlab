@@ -19,6 +19,9 @@ export interface Challenge {
   skills: string[];
   prerequisites: string[];
   hints: string[];
+  hints_count: number;
+  hints_revealed: number;
+  hint_penalty: number;
   flag_format?: string | null;
   environment_type: string;
   author?: ChallengeAuthor | null;

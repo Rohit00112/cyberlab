@@ -27,6 +27,7 @@ class ChallengeCreate(BaseModel):
     skills: list[str] = Field(default_factory=list)
     prerequisites: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)
+    hint_penalty: int = Field(default=0, ge=0)
     flag: str | None = None
     flag_format: str | None = Field(default=None, max_length=120)
     environment_type: str = Field(default="none", max_length=32)
@@ -52,6 +53,7 @@ class ChallengeUpdate(BaseModel):
     skills: list[str] | None = None
     prerequisites: list[str] | None = None
     hints: list[str] | None = None
+    hint_penalty: int | None = Field(default=None, ge=0)
     flag: str | None = None
     flag_format: str | None = Field(default=None, max_length=120)
     environment_type: str | None = Field(default=None, max_length=32)
@@ -73,6 +75,9 @@ class ChallengeOut(BaseModel):
     skills: list[str] = Field(default_factory=list)
     prerequisites: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)
+    hints_count: int = 0
+    hints_revealed: int = 0
+    hint_penalty: int = 0
     flag_format: str | None = None
     environment_type: str
     author: AuthorOut | None = None

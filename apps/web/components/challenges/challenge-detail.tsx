@@ -15,7 +15,8 @@ import {
 } from "@/lib/challenges/types";
 
 export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
-  const [revealedHints, setRevealedHints] = useState(0);
+  const [revealedHints, setRevealedHints] = useState(challenge.hints_revealed ?? 0);
+  const [revealing, setRevealing] = useState(false);
   const [flag, setFlag] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<FlagSubmitResult | null>(null);
@@ -39,6 +40,23 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
     }
   }
 
+  async function onRevealHint() {
+    if (revealing) return;
+    setRevealing(true);
+    try {
+      const res = await api.post<{ hints_revealed: number }>(
+        `/challenges/${challenge.id}/hints/${revealedHints}/reveal`,
+      );
+      setRevealedHints(res.hints_revealed);
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? (err.detail ?? "Reveal failed") : "Network error";
+      setResult({ correct: false, points: 0, already_solved: false, message });
+    } finally {
+      setRevealing(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -48,6 +66,12 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
           <span className="text-lg font-semibold tabular-nums text-primary">
             {challenge.points}pts
           </span>
+          {challenge.hint_penalty > 0 ? (
+            <span className="text-xs text-muted-foreground">
+              −{challenge.hint_penalty}{" "}
+              {revealedHints > 0 ? `× ${revealedHints} revealed` : "per hint"}
+            </span>
+          ) : null}
           {challenge.estimated_minutes ? (
             <span className="text-sm text-muted-foreground">
               ~{challenge.estimated_minutes} min
@@ -79,24 +103,14 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
           <Card>
             <CardHeader className="flex-row items-center justify-between">
               <CardTitle>Hints</CardTitle>
-              {challenge.hints.length > 0 ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setRevealedHints(
-                      revealedHints >= challenge.hints.length
-                        ? 0
-                        : challenge.hints.length,
-                    )
-                  }
-                >
-                  {revealedHints >= challenge.hints.length ? "Hide hints" : "Reveal hints"}
+              {challenge.hints_count > 0 && revealedHints < challenge.hints_count ? (
+                <Button size="sm" variant="outline" onClick={onRevealHint} disabled={revealing}>
+                  {revealing ? "Revealing…" : "Reveal hint"}
                 </Button>
               ) : null}
             </CardHeader>
             <CardContent>
-              {challenge.hints.length === 0 ? (
+              {challenge.hints_count === 0 ? (
                 <p className="text-muted-foreground">No hints available.</p>
               ) : (
                 <ol className="list-decimal space-y-2 pl-5">
@@ -107,7 +121,7 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
                   ))}
                   {revealedHints === 0 ? (
                     <li className="text-muted-foreground">
-                      Hidden — use only if you are stuck.
+                      {challenge.hints_count} hidden — use only if you are stuck.
                     </li>
                   ) : null}
                 </ol>

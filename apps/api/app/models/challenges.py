@@ -25,6 +25,7 @@ class Challenge(Base):
     skills: Mapped[list[str] | None] = mapped_column(JSON)
     prerequisites: Mapped[list[str] | None] = mapped_column(JSON)
     hints: Mapped[list[str] | None] = mapped_column(JSON)
+    hint_penalty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     flag_hash: Mapped[str | None] = mapped_column(String(64))
     flag_format: Mapped[str | None] = mapped_column(String(120))
     environment_type: Mapped[str] = mapped_column(String(32), default="none", nullable=False)

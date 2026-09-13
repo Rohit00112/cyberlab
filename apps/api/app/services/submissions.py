@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.flags import verify_flag
 from app.models.challenges import Challenge
+from app.models.hint_reveals import HintReveal
 from app.models.submissions import Submission
 from app.models.users import User
 from app.schemas.submission import (
@@ -65,11 +66,23 @@ async def submit_flag(
                 correct=True, points=0, already_solved=True, message="Already solved"
             )
 
+    if correct:
+        revealed = await db.scalar(
+            select(func.count())
+            .select_from(HintReveal)
+            .where(
+                HintReveal.user_id == user_id,
+                HintReveal.challenge_id == challenge.id,
+            )
+        ) or 0
+        earned = max(challenge.points - (challenge.hint_penalty or 0) * revealed, 0)
+    else:
+        earned = 0
     submission = Submission(
         challenge_id=challenge.id,
         user_id=user_id,
         is_correct=correct,
-        earned_points=challenge.points if correct else 0,
+        earned_points=earned,
     )
     db.add(submission)
     try:

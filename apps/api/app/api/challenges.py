@@ -39,6 +39,7 @@ async def list_challenges(
     challenges, _ = await service.list_challenges(
         db,
         user.roles,
+        user_id=user.id,
         category=category,
         difficulty=difficulty,
         status_filter=status_filter,
@@ -54,7 +55,9 @@ async def get_challenge(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser, Depends(require_permission("challenge.view"))],
 ):
-    return await service.get_challenge(db, challenge_id, user.roles)
+    return await service.get_challenge(
+        db, challenge_id, user.roles, user_id=user.id
+    )
 
 
 @router.post("", response_model=ChallengeOut, status_code=status.HTTP_201_CREATED)
