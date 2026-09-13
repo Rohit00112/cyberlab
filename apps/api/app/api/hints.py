@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
+from app.api.ratelimit import rate_limit
 from app.db.session import get_db
 from app.models.challenges import Challenge
 from app.services import hints as hint_service
@@ -38,6 +39,7 @@ async def reveal_hint(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser, Depends(require_permission("challenge.attempt"))],
+    _limit: Annotated[None, Depends(rate_limit("hints.reveal", limit=20, window_seconds=60))],
 ):
     """Unlock the next unrevealed hint in order (PRD §22)."""
     challenge = await _get_published(db, challenge_id)

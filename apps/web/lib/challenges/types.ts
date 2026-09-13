@@ -124,3 +124,24 @@ export interface AnalyticsSummary {
   top_challenges: PerChallengeStat[];
   top_students: LeaderboardEntry[];
 }
+
+export interface AuditLog {
+  id: string;
+  event: string;
+  user_id?: string | null;
+  display_name?: string | null;
+  target_id?: string | null;
+  ip_address?: string | null;
+  details?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export const AUDIT_EVENTS = [
+  "challenge.create",
+  "challenge.update",
+  "challenge.publish",
+  "challenge.delete",
+  "submission.attempt",
+  "submission.solve",
+  "hint.reveal",
+] as const;

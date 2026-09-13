@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
+from app.api.ratelimit import rate_limit
 from app.db.session import get_db
 from app.models.challenges import Challenge
 from app.schemas.submission import (
@@ -45,6 +46,7 @@ async def submit_flag(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser, Depends(require_permission("submission.create"))],
+    _limit: Annotated[None, Depends(rate_limit("submissions.submit", limit=10, window_seconds=60))],
 ):
     challenge = await _get_published(db, challenge_id)
     result = await submission_service.submit_flag(

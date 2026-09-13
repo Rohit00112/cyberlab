@@ -14,6 +14,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "challenge.publish",
         "submission.review",
         "analytics.view",
+        "audit.view",
         "lab.launch",
         "lab.reset",
         "lab.admin",
