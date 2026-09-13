@@ -122,9 +122,19 @@ async def submit_flag(
         await db.commit()
 
         await grant_eligible_badges(db, user_id, request=request)
+
+        from app.services.recommendations import refresh_challenge_difficulty_after_submission
+        await refresh_challenge_difficulty_after_submission(db, challenge.id)
+        await db.commit()
+
         return FlagSubmitResult(
             correct=True, points=submission.earned_points, message="Correct flag!"
         )
+    else:
+        from app.services.recommendations import refresh_challenge_difficulty_after_submission
+        await refresh_challenge_difficulty_after_submission(db, challenge.id)
+        await db.commit()
+
     return FlagSubmitResult(correct=False, points=0, message="Incorrect flag")
 
 
