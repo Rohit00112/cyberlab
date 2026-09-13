@@ -24,6 +24,9 @@ export function AppNav() {
           <Link href="/leaderboard" className="hover:underline">
             Leaderboard
           </Link>
+          <Link href="/competitions" className="hover:underline">
+            Competitions
+          </Link>
           {hasPermission("lab.launch") ? (
             <Link href="/labs" className="hover:underline">
               My Labs
@@ -42,6 +45,16 @@ export function AppNav() {
           {hasPermission("user.view") ? (
             <Link href="/admin/users" className="hover:underline">
               Users
+            </Link>
+          ) : null}
+          {hasPermission("lab.admin") ? (
+            <Link href="/admin/labs" className="hover:underline">
+              Labs
+            </Link>
+          ) : null}
+          {hasPermission("competition.manage") ? (
+            <Link href="/admin/competitions" className="hover:underline">
+              Comp Admin
             </Link>
           ) : null}
           {hasPermission("audit.view") ? (

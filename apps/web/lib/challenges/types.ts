@@ -24,6 +24,11 @@ export interface Challenge {
   hint_penalty: number;
   flag_format?: string | null;
   environment_type: string;
+  lab_config?: {
+    image?: string;
+    expiry_minutes?: number;
+    max_instances?: number;
+  } | null;
   author?: ChallengeAuthor | null;
   status: ChallengeStatus;
   version: number;
@@ -155,6 +160,7 @@ export const AUDIT_EVENTS = [
   "lab.stop",
   "lab.reset",
   "lab.expire",
+  "lab.terminate",
 ] as const;
 
 export interface Lab {
@@ -164,11 +170,31 @@ export interface Lab {
   status: "provisioning" | "running" | "stopped" | "expired" | "error";
   network_name: string | null;
   connection_hint: string | null;
+  container_name: string | null;
   expires_at: string | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
   challenge_title: string | null;
+}
+
+export interface LabAdmin extends Lab {
+  user_id: string | null;
+  user_display_name: string | null;
+  user_email: string | null;
+}
+
+export interface LabList {
+  items: LabAdmin[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface LabHealth {
+  status: string;
+  docker: { reachable: boolean };
+  labs: { running: number; provisioning: number; total: number };
 }
 
 export const LAB_STATUS_LABELS: Record<Lab["status"], string> = {

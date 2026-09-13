@@ -19,11 +19,31 @@ from app.infrastructure import docker as docker_adapter
 from app.infrastructure.docker import DockerError
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
-from app.schemas.lab import LabOut
+from app.models.users import User
+from app.schemas.lab import LabAdminOut, LabOut
 from app.services.users import record_audit
 
 ACTIVE_STATUSES = {"provisioning", "running"}
 DOCKER_TIMEOUT = 30
+
+
+def _lab_settings(challenge: Challenge | None) -> dict:
+    """Resolve effective lab config from the challenge, with server-enforced caps."""
+    settings = get_settings()
+    cfg = (challenge.lab_config or {}) if challenge else {}
+    image = cfg.get("image") or settings.lab_image
+    expiry = cfg.get("expiry_minutes") or settings.lab_default_expiry_minutes
+    max_instances = cfg.get("max_instances")
+    caps = {
+        "image": image,
+        "expiry_minutes": max(
+            settings.lab_default_expiry_minutes, min(int(expiry), settings.lab_max_expiry_minutes)
+        ),
+        "max_instances": (
+            int(max_instances) if isinstance(max_instances, int) and max_instances >= 1 else None
+        ),
+    }
+    return caps
 
 
 async def _to_out(db: AsyncSession, lab: LabInstance) -> LabOut:
@@ -63,6 +83,7 @@ async def launch_lab(
         )
 
     settings = get_settings()
+    lab_cfg = _lab_settings(challenge)
     active = int(
         await db.scalar(
             select(func.count())
@@ -74,12 +95,13 @@ async def launch_lab(
         )
         or 0
     )
-    if active >= settings.lab_max_instances_per_user:
+    cap = lab_cfg.get("max_instances") or settings.lab_max_instances_per_user
+    if active >= cap:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Lab limit reached ({settings.lab_max_instances_per_user} active "
-                "labs at a time). Stop or reset one first."
+                f"Lab limit reached ({cap} active labs at a time). "
+                "Stop or reset one first."
             ),
         )
 
@@ -97,18 +119,18 @@ async def launch_lab(
         await docker_adapter.ensure_network(lab.network_name)
         name = f"lab-{str(user.id)[:8]}-{str(lab.id)[:8]}"
         container_id, ip = await docker_adapter.create_and_start_container(
-            name, settings.lab_image, lab.network_name
+            name, lab_cfg["image"], lab.network_name
         )
         lab.container_id = container_id
         lab.container_name = name
         lab.connection_hint = (
             f"Container {name} is live at {ip} on isolated network {lab.network_name}. "
-            f"Shares the {settings.lab_image} image; will expire in "
-            f"{settings.lab_default_expiry_minutes} minutes."
+            f"Shares the {lab_cfg['image']} image; will expire in "
+            f"{lab_cfg['expiry_minutes']} minutes."
         )
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
-            minutes=settings.lab_default_expiry_minutes
+            minutes=lab_cfg["expiry_minutes"]
         )
     except DockerError as exc:
         lab.status = "error"
@@ -175,7 +197,8 @@ async def reset_lab(
     if not _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
-    settings = get_settings()
+    challenge = await db.get(Challenge, lab.challenge_id)
+    lab_cfg = _lab_settings(challenge)
     if lab.container_id:
         try:
             await docker_adapter.remove_container(lab.container_id)
@@ -186,7 +209,7 @@ async def reset_lab(
     try:
         await docker_adapter.ensure_network(lab.network_name)
         container_id, ip = await docker_adapter.create_and_start_container(
-            name, settings.lab_image, lab.network_name
+            name, lab_cfg["image"], lab.network_name
         )
         lab.container_id = container_id
         lab.container_name = name
@@ -195,7 +218,7 @@ async def reset_lab(
         )
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
-            minutes=settings.lab_default_expiry_minutes
+            minutes=lab_cfg["expiry_minutes"]
         )
         lab.error_message = None
     except DockerError as exc:
@@ -281,3 +304,135 @@ async def my_labs(db: AsyncSession, user: CurrentUser) -> list[LabOut]:
         await db.commit()
 
     return [await _to_out(db, lab) for lab in rows]
+
+
+async def admin_list_labs(
+    db: AsyncSession,
+    *,
+    status_filter: str | None = None,
+    user_id: uuid.UUID | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[LabAdminOut], int]:
+    conditions = []
+    if status_filter:
+        conditions.append(LabInstance.status == status_filter)
+    if user_id:
+        conditions.append(LabInstance.user_id == user_id)
+
+    total = int(
+        await db.scalar(
+            select(func.count()).select_from(LabInstance).where(*conditions)
+        )
+        or 0
+    )
+    labs = (
+        await db.scalars(
+            select(LabInstance)
+            .where(*conditions)
+            .order_by(LabInstance.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    users = await _users_map(db, [lab.user_id for lab in labs]) if labs else {}
+    challenges = (
+        {
+            c.id: c
+            for c in (
+                await db.scalars(
+                    select(Challenge).where(
+                        Challenge.id.in_([lab.challenge_id for lab in labs])
+                    )
+                )
+            ).all()
+        }
+        if labs
+        else {}
+    )
+
+    out: list[LabAdminOut] = []
+    for lab in labs:
+        challenge = challenges.get(lab.challenge_id)
+        u = users.get(str(lab.user_id))
+        out.append(
+            LabAdminOut(
+                id=lab.id,
+                challenge_id=lab.challenge_id,
+                challenge_title=challenge.title if challenge else None,
+                challenge_slug=challenge.slug if challenge else None,
+                status=lab.status,
+                connection_hint=lab.connection_hint,
+                network_name=lab.network_name,
+                container_name=lab.container_name,
+                expires_at=lab.expires_at,
+                created_at=lab.created_at,
+                updated_at=lab.updated_at,
+                error_message=lab.error_message,
+                user_id=lab.user_id,
+                user_display_name=u["display_name"] if u else None,
+                user_email=u["email"] if u else None,
+            )
+        )
+    return out, total
+
+
+async def admin_terminate_lab(
+    db: AsyncSession,
+    lab: LabInstance,
+    admin_user: User,
+    request: Request | None = None,
+) -> LabAdminOut:
+    if lab.container_id:
+        try:
+            await docker_adapter.stop_container(lab.container_id)
+            await docker_adapter.remove_container(lab.container_id)
+        except DockerError:
+            pass
+    lab.status = "expired"
+    await db.commit()
+    await db.refresh(lab)
+    await record_audit(
+        db,
+        event="lab.terminate",
+        user_id=admin_user.id,
+        target_id=str(lab.id),
+        request=request,
+    )
+    u = (await _users_map(db, [lab.user_id])).get(str(lab.user_id))
+    challenge = await db.get(Challenge, lab.challenge_id)
+    return LabAdminOut(
+        id=lab.id,
+        challenge_id=lab.challenge_id,
+        challenge_title=challenge.title if challenge else None,
+        challenge_slug=challenge.slug if challenge else None,
+        status=lab.status,
+        connection_hint=lab.connection_hint,
+        network_name=lab.network_name,
+        container_name=lab.container_name,
+        expires_at=lab.expires_at,
+        created_at=lab.created_at,
+        updated_at=lab.updated_at,
+        error_message=lab.error_message,
+        user_id=lab.user_id,
+        user_display_name=u["display_name"] if u else None,
+        user_email=u["email"] if u else None,
+    )
+
+
+async def _users_map(
+    db: AsyncSession, user_ids: list[uuid.UUID]
+) -> dict[str, dict[str, str | None]]:
+    if not user_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(User.id, User.display_name, User.email).where(
+                User.id.in_(user_ids)
+            )
+        )
+    ).all()
+    return {
+        str(row[0]): {"display_name": row[1], "email": row[2]} for row in rows
+    }

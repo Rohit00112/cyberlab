@@ -20,3 +20,16 @@ class LabOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     error_message: str | None = None
+
+
+class LabAdminOut(LabOut):
+    user_id: uuid.UUID | None = None
+    user_display_name: str | None = None
+    user_email: str | None = None
+
+
+class LabListOut(BaseModel):
+    items: list[LabAdminOut]
+    total: int
+    offset: int
+    limit: int

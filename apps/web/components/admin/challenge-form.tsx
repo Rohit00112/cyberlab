@@ -41,6 +41,10 @@ function splitList(value: string): string[] {
     .filter(Boolean);
 }
 
+function isPositiveInt(value: string): boolean {
+  return /^[1-9]\d*$/.test(value);
+}
+
 export function ChallengeForm({ mode, initial }: ChallengeFormProps) {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
@@ -68,6 +72,17 @@ export function ChallengeForm({ mode, initial }: ChallengeFormProps) {
   const [flagFormat, setFlagFormat] = useState(initial?.flag_format ?? "");
   const [environmentType, setEnvironmentType] = useState(
     initial?.environment_type ?? "none",
+  );
+  const [labImage, setLabImage] = useState(initial?.lab_config?.image ?? "");
+  const [labExpiry, setLabExpiry] = useState(
+    initial?.lab_config?.expiry_minutes != null
+      ? String(initial.lab_config.expiry_minutes)
+      : "",
+  );
+  const [labMaxInstances, setLabMaxInstances] = useState(
+    initial?.lab_config?.max_instances != null
+      ? String(initial.lab_config.max_instances)
+      : "",
   );
 
   function updateHint(index: number, value: string) {
@@ -103,6 +118,21 @@ export function ChallengeForm({ mode, initial }: ChallengeFormProps) {
       payload.flag = flag.trim() || null;
     } else if (flag.trim()) {
       payload.flag = flag.trim();
+    }
+
+    if (environmentType === "docker") {
+      payload.lab_config = {
+        ...(labImage.trim() ? { image: labImage.trim() } : {}),
+        ...(isPositiveInt(labExpiry) ? { expiry_minutes: parseInt(labExpiry, 10) } : {}),
+        ...(isPositiveInt(labMaxInstances)
+          ? { max_instances: parseInt(labMaxInstances, 10) }
+          : {}),
+      };
+      if (Object.keys(payload.lab_config as Record<string, unknown>).length === 0) {
+        payload.lab_config = null;
+      }
+    } else {
+      payload.lab_config = null;
     }
 
     try {
@@ -289,6 +319,48 @@ export function ChallengeForm({ mode, initial }: ChallengeFormProps) {
             </SelectContent>
           </Select>
         </div>
+        {environmentType === "docker" ? (
+          <div className="sm:col-span-2 rounded-md border p-4">
+            <p className="text-sm font-medium">Docker lab config</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Optional overrides. Expiry is capped server-side; instance limits
+              apply per user.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="challenge-lab-image">Image</Label>
+                <Input
+                  id="challenge-lab-image"
+                  value={labImage}
+                  onChange={(e) => setLabImage(e.target.value)}
+                  placeholder="Sample OS / image reference"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="challenge-lab-expiry">Expiry (minutes)</Label>
+                <Input
+                  id="challenge-lab-expiry"
+                  type="number"
+                  min={1}
+                  value={labExpiry}
+                  onChange={(e) => setLabExpiry(e.target.value)}
+                  placeholder="Server default"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="challenge-lab-max-instances">Max instances / user</Label>
+                <Input
+                  id="challenge-lab-max-instances"
+                  type="number"
+                  min={1}
+                  value={labMaxInstances}
+                  onChange={(e) => setLabMaxInstances(e.target.value)}
+                  placeholder="Server default"
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="sm:col-span-2">
           <Label>Hints</Label>
           <div className="mt-2 space-y-2">

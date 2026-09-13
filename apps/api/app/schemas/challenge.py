@@ -31,6 +31,7 @@ class ChallengeCreate(BaseModel):
     flag: str | None = None
     flag_format: str | None = Field(default=None, max_length=120)
     environment_type: str = Field(default="none", max_length=32)
+    lab_config: dict | None = None
     status: str = Field(default="draft")
 
     def validate_enums(self) -> None:
@@ -57,6 +58,7 @@ class ChallengeUpdate(BaseModel):
     flag: str | None = None
     flag_format: str | None = Field(default=None, max_length=120)
     environment_type: str | None = Field(default=None, max_length=32)
+    lab_config: dict | None = None
     status: str | None = None
 
 
@@ -80,6 +82,7 @@ class ChallengeOut(BaseModel):
     hint_penalty: int = 0
     flag_format: str | None = None
     environment_type: str
+    lab_config: dict | None = None
     author: AuthorOut | None = None
     status: str
     version: int

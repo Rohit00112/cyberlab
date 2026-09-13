@@ -71,7 +71,10 @@ export function LabPanel({ challenge }: { challenge: Challenge }) {
             {busy ? "Launching…" : "Launch Lab"}
           </Button>
           <p className="text-xs text-muted-foreground">
-            Spins up an isolated single-user container on our lab network. Expires after 60 minutes.
+            Spins up an isolated single-user container on our lab network.
+            {challenge.lab_config?.expiry_minutes
+              ? ` Expires after ${challenge.lab_config.expiry_minutes} minutes.`
+              : " Expires after 60 minutes."}
           </p>
         </>
       ) : (

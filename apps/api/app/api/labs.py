@@ -11,7 +11,7 @@ from app.api.deps import CurrentUser, require_permission
 from app.db.session import get_db
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
-from app.schemas.lab import LabOut
+from app.schemas.lab import LabAdminOut, LabListOut, LabOut
 from app.services import labs as lab_service
 
 router = APIRouter(tags=["labs"])
@@ -89,3 +89,31 @@ async def expire_lab(
 ):
     lab = await _get_lab(db, lab_id)
     return await lab_service.expire_lab(db, user, lab, request=request)
+
+
+@router.get("/admin/labs", response_model=LabListOut)
+async def admin_list_labs(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.admin"))],
+    status_filter: str | None = None,
+    user_id: uuid.UUID | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """All labs across users (admin monitoring)."""
+    items, total = await lab_service.admin_list_labs(
+        db, status_filter=status_filter, user_id=user_id, limit=limit, offset=offset
+    )
+    return LabListOut(items=items, total=total, offset=offset, limit=limit)
+
+
+@router.post("/admin/labs/{lab_id}/terminate", response_model=LabAdminOut)
+async def admin_terminate_lab(
+    lab_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.admin"))],
+):
+    """Force-stop and expire another user's lab."""
+    lab = await _get_lab(db, lab_id)
+    return await lab_service.admin_terminate_lab(db, lab, user, request=request)

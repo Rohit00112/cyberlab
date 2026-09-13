@@ -19,6 +19,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "lab.launch",
         "lab.reset",
         "lab.admin",
+        "competition.create",
+        "competition.manage",
     },
     "competition_organizer": {
         "competition.create",

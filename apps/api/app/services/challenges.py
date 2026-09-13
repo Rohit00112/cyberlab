@@ -104,6 +104,7 @@ async def create_challenge(
         flag_hash=hash_flag(data.flag) if data.flag else None,
         flag_format=data.flag_format,
         environment_type=data.environment_type,
+        lab_config=data.lab_config,
         author_id=author_id,
         status=data.status,
     )

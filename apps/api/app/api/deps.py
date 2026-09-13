@@ -79,3 +79,18 @@ def require_permission(permission: str):
         return user
 
     return dependency
+
+
+async def current_user_or_none(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CurrentUser | None:
+    """Identity for optional-authentication endpoints (public pages)."""
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials, db)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
