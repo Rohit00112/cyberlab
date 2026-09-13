@@ -63,6 +63,12 @@ export const STATUS_OPTIONS: { value: ChallengeStatus; label: string }[] = [
   { value: "archived", label: "Archived" },
 ];
 
+export const ENVIRONMENT_OPTIONS: { value: string; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "static", label: "Static" },
+  { value: "docker", label: "Docker lab" },
+];
+
 export function statusLabel(value: ChallengeStatus): string {
   return STATUS_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
@@ -137,6 +143,7 @@ export interface AuditLog {
 }
 
 export const AUDIT_EVENTS = [
+  "auth.logout",
   "challenge.create",
   "challenge.update",
   "challenge.publish",
@@ -144,6 +151,10 @@ export const AUDIT_EVENTS = [
   "submission.attempt",
   "submission.solve",
   "hint.reveal",
+  "lab.launch",
+  "lab.stop",
+  "lab.reset",
+  "lab.expire",
 ] as const;
 
 export interface Lab {
@@ -167,3 +178,24 @@ export const LAB_STATUS_LABELS: Record<Lab["status"], string> = {
   expired: "Expired",
   error: "Error",
 };
+
+export interface ProfileSolve {
+  challenge_id: string;
+  slug: string;
+  title: string;
+  points: number;
+  skills: string[];
+  solved_at: string;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  roles: string[];
+  created_at: string | null;
+  points: number;
+  solved_count: number;
+  attempts: number;
+  recent_solves: ProfileSolve[];
+}

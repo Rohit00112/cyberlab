@@ -17,6 +17,7 @@ import { ApiError, api } from "@/lib/api";
 import {
   CATEGORY_OPTIONS,
   DIFFICULTY_OPTIONS,
+  ENVIRONMENT_OPTIONS,
   STATUS_OPTIONS,
   type Challenge,
   type ChallengeStatus,
@@ -275,12 +276,18 @@ export function ChallengeForm({ mode, initial }: ChallengeFormProps) {
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="challenge-env">Environment type</Label>
-          <Input
-            id="challenge-env"
-            value={environmentType}
-            onChange={(e) => setEnvironmentType(e.target.value)}
-            placeholder="none"
-          />
+          <Select value={environmentType} onValueChange={(value) => value && setEnvironmentType(value)}>
+            <SelectTrigger id="challenge-env" className="w-full">
+              <SelectValue placeholder="Environment" />
+            </SelectTrigger>
+            <SelectContent>
+              {ENVIRONMENT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="sm:col-span-2">
           <Label>Hints</Label>

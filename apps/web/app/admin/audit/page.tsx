@@ -86,7 +86,7 @@ export default async function AdminAuditPage({
         <p className="mt-6 text-sm text-muted-foreground">
           Want deeper forensics? Open{" "}
           <Link
-            href="/docs"
+            href={`${process.env.NEXT_PUBLIC_API_BASE?.replace(/\/api\/v1$/, "") ?? "http://localhost:8000"}/docs`}
             target="_blank"
             className={buttonVariants({ variant: "link", size: "sm" })}
           >

@@ -1,7 +1,7 @@
 """Submission model. One row per flag attempt; correct solves are unique per (user, challenge).
 
 Scoring (PRD §21 MVP): Final Points = Base Challenge Points - Hint Penalties.
-Hints are unrevealed for MVP, so a solve earns the full base points exactly once.
+A solve earns the base points minus any hint penalties, exactly once.
 """
 from __future__ import annotations
 
