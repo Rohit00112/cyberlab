@@ -42,6 +42,31 @@ export const DIFFICULTY_OPTIONS = Object.entries(DIFFICULTY_LABELS).map(([value,
   label,
 }));
 
+export const CATEGORIES = [
+  "Linux",
+  "Networking",
+  "Web Security",
+  "Cryptography",
+  "Digital Forensics",
+  "OSINT",
+  "System Security",
+  "Blue Team",
+  "Secure Coding",
+  "Cloud Security",
+];
+
+export const CATEGORY_OPTIONS = CATEGORIES.map((value) => ({ value, label: value }));
+
+export const STATUS_OPTIONS: { value: ChallengeStatus; label: string }[] = [
+  { value: "draft", label: "Draft" },
+  { value: "published", label: "Published" },
+  { value: "archived", label: "Archived" },
+];
+
+export function statusLabel(value: ChallengeStatus): string {
+  return STATUS_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
 export function difficultyLabel(value: Difficulty): string {
   return DIFFICULTY_LABELS[value] ?? value;
 }

@@ -29,6 +29,11 @@ export function AppNav() {
               Analytics
             </Link>
           ) : null}
+          {hasPermission("challenge.edit") ? (
+            <Link href="/admin/challenges" className="hover:underline">
+              Manage
+            </Link>
+          ) : null}
           <Link href="/profile" className="hover:underline">
             Profile
           </Link>
