@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import { hasPermission } from "@/lib/auth/client";
 
 export function AppNav() {
   const { user, logout } = useAuth();
@@ -23,6 +24,11 @@ export function AppNav() {
           <Link href="/leaderboard" className="hover:underline">
             Leaderboard
           </Link>
+          {hasPermission("analytics.view") ? (
+            <Link href="/analytics" className="hover:underline">
+              Analytics
+            </Link>
+          ) : null}
           <Link href="/profile" className="hover:underline">
             Profile
           </Link>

@@ -15,10 +15,13 @@ from app.models.hint_reveals import HintReveal
 from app.models.submissions import Submission
 from app.models.users import User
 from app.schemas.submission import (
+    AnalyticsSummary,
     ChallengeSubmissionStatus,
     FlagSubmitResult,
     LeaderboardEntry,
+    PerChallengeStat,
     SubmissionOut,
+    SubmissionReviewOut,
     UserStats,
 )
 from app.services.users import record_audit
@@ -201,3 +204,123 @@ async def leaderboard(db: AsyncSession, *, limit: int = 50) -> list[LeaderboardE
         )
         for index, (user_id, display_name, points, solved, _first_at) in enumerate(rows)
     ]
+
+async def review_submissions(
+    db: AsyncSession, *, limit: int = 50, offset: int = 0
+) -> tuple[list[SubmissionReviewOut], int]:
+    """Faculty-facing list of all student flag submissions (PRD §7.2)."""
+    total = (
+        await db.scalar(select(func.count()).select_from(Submission)) or 0
+    )
+    rows = (
+        await db.execute(
+            select(
+                Submission,
+                User.display_name,
+                Challenge.title,
+            )
+            .join(User, User.id == Submission.user_id)
+            .join(Challenge, Challenge.id == Submission.challenge_id)
+            .order_by(Submission.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+    return [
+        SubmissionReviewOut(
+            id=submission.id,
+            user_id=submission.user_id,
+            display_name=display_name,
+            challenge_id=submission.challenge_id,
+            challenge_title=title,
+            is_correct=submission.is_correct,
+            earned_points=submission.earned_points,
+            created_at=submission.created_at,
+        )
+        for submission, display_name, title in rows
+    ], int(total)
+
+
+async def analytics_summary(db: AsyncSession) -> AnalyticsSummary:
+    """Platform-level analytics for faculty (PRD §7.2, §50)."""
+    total_users = int(await db.scalar(select(func.count()).select_from(User)) or 0)
+    total_submissions = int(
+        await db.scalar(select(func.count()).select_from(Submission)) or 0
+    )
+    total_solves = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(Submission)
+            .where(Submission.is_correct.is_(True))
+        )
+        or 0
+    )
+    total_points = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(Submission.earned_points), 0))
+        )
+        or 0
+    )
+    success_rate = round(total_solves / total_submissions, 4) if total_submissions else 0.0
+
+    rows = (
+        await db.execute(
+            select(
+                Challenge.id,
+                Challenge.slug,
+                Challenge.title,
+                func.count(Submission.id),
+                func.count().filter(Submission.is_correct),
+            )
+            .join(Challenge, Challenge.id == Submission.challenge_id)
+            .group_by(Challenge.id, Challenge.slug, Challenge.title)
+            .order_by(func.count().filter(Submission.is_correct).desc())
+            .limit(5)
+        )
+    ).all()
+    top_challenges = [
+        PerChallengeStat(
+            challenge_id=challenge_id,
+            slug=slug,
+            title=title,
+            attempts=int(attempts),
+            solves=int(solves),
+        )
+        for challenge_id, slug, title, attempts, solves in rows
+    ]
+
+    tops = (
+        await db.execute(
+            select(
+                User.id,
+                User.display_name,
+                func.coalesce(func.sum(Submission.earned_points), 0),
+                func.count().filter(Submission.is_correct),
+            )
+            .join(Submission, Submission.user_id == User.id)
+            .where(Submission.is_correct.is_(True))
+            .group_by(User.id, User.display_name)
+            .order_by(func.coalesce(func.sum(Submission.earned_points), 0).desc())
+            .limit(5)
+        )
+    ).all()
+    top_students = [
+        LeaderboardEntry(
+            rank=index + 1,
+            user_id=user_id,
+            display_name=display_name,
+            points=int(points),
+            solved_count=int(solved),
+        )
+        for index, (user_id, display_name, points, solved) in enumerate(tops)
+    ]
+
+    return AnalyticsSummary(
+        total_users=total_users,
+        total_submissions=total_submissions,
+        total_solves=total_solves,
+        success_rate=success_rate,
+        total_points_awarded=total_points,
+        top_challenges=top_challenges,
+        top_students=top_students,
+    )

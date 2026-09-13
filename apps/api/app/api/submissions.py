@@ -11,10 +11,12 @@ from app.api.deps import CurrentUser, require_permission
 from app.db.session import get_db
 from app.models.challenges import Challenge
 from app.schemas.submission import (
+    AnalyticsSummary,
     ChallengeSubmissionStatus,
     FlagSubmit,
     FlagSubmitResult,
     SubmissionOut,
+    SubmissionReviewOut,
     UserStats,
 )
 from app.services import challenges as challenge_service
@@ -79,3 +81,25 @@ async def my_stats(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.view"))],
 ):
     return await submission_service.user_stats(db, user.id)
+
+@router.get("/submissions/review", response_model=list[SubmissionReviewOut])
+async def review_submissions(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("submission.review"))],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """All student flag submissions, newest first (PRD §7.2)."""
+    rows, _total = await submission_service.review_submissions(
+        db, limit=limit, offset=offset
+    )
+    return rows
+
+
+@router.get("/analytics/summary", response_model=AnalyticsSummary)
+async def get_analytics_summary(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("analytics.view"))],
+):
+    """Platform-wide analytics (PRD §7.2, §50)."""
+    return await submission_service.analytics_summary(db)

@@ -70,3 +70,32 @@ export interface LeaderboardEntry {
   points: number;
   solved_count: number;
 }
+
+export interface SubmissionReview {
+  id: string;
+  user_id: string;
+  display_name?: string | null;
+  challenge_id: string;
+  challenge_title?: string | null;
+  is_correct: boolean;
+  earned_points: number;
+  created_at: string;
+}
+
+export interface PerChallengeStat {
+  challenge_id: string;
+  slug: string;
+  title: string;
+  attempts: number;
+  solves: number;
+}
+
+export interface AnalyticsSummary {
+  total_users: number;
+  total_submissions: number;
+  total_solves: number;
+  success_rate: number;
+  total_points_awarded: number;
+  top_challenges: PerChallengeStat[];
+  top_students: LeaderboardEntry[];
+}
