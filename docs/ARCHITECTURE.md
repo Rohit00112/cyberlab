@@ -35,6 +35,20 @@ Cyber Range (Docker)     ─┘        (LabProvider abstraction → Proxmox in P
 8. **Adaptive surfaces** — recommendations (`/recommendations/challenges`), learning paths
    (sequential unlock), and difficulty analytics feed the student-facing UI (dashboard, `/skills`,
    `/paths`, `/analytics`).
+9. **Research platform data governance** — researchers never touch the live database or raw
+   identities. `GET /research/datasets` builds **pseudonymized** exports on demand: identities are
+   replaced with HMAC-SHA256–derived `participant_id`s (keyed by app secret), PII fields are
+   stripped, and every export is a **snapshot** that auto-expires (`research_dataset_expiry_days`,
+   default 30). Exports are JSON/CSV artifacts on a volume under `data/research`. Recommendation
+   impressions are logged to `recommendation_logs` (deduped per user/challenge/day) so researchers
+   can measure recommendation quality offline.
+10. **Experiments never run in the app** — the API only records an **experiment registry**
+    (`ResearchExperiment`: name, model ref, params, metrics, status) and serves a live-readable
+    **knowledge graph** (`/research/graph`). ML/GNN training happens fully offline in
+    `apps/api/research/` against exported datasets (`build_graph.py` → `features.py` →
+    `train_gnn.py`), so researchers iterate without optional deps baked into the platform.
+11. **Datasets are delete/expire-visible** — expired downloads return 410 Gone; deletion audits
+    `research.dataset.download`/delete and is restricted to dataset owners or `user.manage`.
 
 ## Deviations from PRD recommendations (all deliberate for MVP)
 
@@ -43,3 +57,4 @@ Cyber Range (Docker)     ─┘        (LabProvider abstraction → Proxmox in P
 | Lab orchestration | dedicated service | module within API (`app/labs`) | single-instance compose; extracted later |
 | Task queue | Celery | async tasks + Redis state | dependency reduction until volume demands it |
 | Proxmox | primary VM backend | Docker only | no VM infrastructure in dev; adapter-first |
+| Recommendation engine | in-app GNN models | rule-based + offline research scripts | PRD §72 wants a research track; live model serving deferred (see decision 10) |

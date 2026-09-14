@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, time
 from typing import cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.challenges import Challenge
+from app.models.research import RecommendationLog
 from app.models.skill_profiles import UserSkillProfile
 from app.models.skills import ChallengeSkill, Skill
 from app.models.submissions import Submission
@@ -43,11 +45,42 @@ async def refresh_difficulty_score(db: AsyncSession, challenge: Challenge) -> No
     await db.flush()
 
 
-async def refresh_challenge_difficulty_after_submission(db: AsyncSession, challenge_id: uuid.UUID) -> None:
+async def refresh_challenge_difficulty_after_submission(
+    db: AsyncSession, challenge_id: uuid.UUID
+) -> None:
     """Helper invoked downstream from flag submission."""
     challenge = await db.get(Challenge, challenge_id)
     if challenge:
         await refresh_difficulty_score(db, challenge)
+
+
+async def _log_recommendations(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    recommendations: list[ChallengeRecommendationOut],
+) -> None:
+    """Record served impressions once per (user, challenge, day) for H1 (§72)."""
+    if not recommendations:
+        return
+    day_start = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC)
+    already_served = set(
+        (
+            await db.scalars(
+                select(RecommendationLog.challenge_id).where(
+                    RecommendationLog.user_id == user_id,
+                    RecommendationLog.generated_at >= day_start,
+                )
+            )
+        ).all()
+    )
+    for recommendation in recommendations:
+        if recommendation.challenge_id not in already_served:
+            db.add(
+                RecommendationLog(
+                    user_id=user_id, challenge_id=recommendation.challenge_id, source="adaptive"
+                )
+            )
+    await db.commit()
 
 
 async def get_recommendations(
@@ -124,7 +157,7 @@ async def get_recommendations(
         scored_challenges.sort(key=lambda x: x["score"], reverse=True)
         scored_challenges = scored_challenges[:limit]
 
-    return [
+    recommendations = [
         ChallengeRecommendationOut(
             challenge_id=item["c"]["challenge"].id,
             slug=item["c"]["challenge"].slug,
@@ -134,7 +167,12 @@ async def get_recommendations(
             points=item["c"]["challenge"].points,
             difficulty_score=item["c"]["challenge"].difficulty_score,
             recommendation_score=item["score"],
-            skills=[SkillBrief(id=s.id, slug=s.slug, name=s.name, icon=s.icon) for s in item["c"]["skills"]],
+            skills=[
+                SkillBrief(id=s.id, slug=s.slug, name=s.name, icon=s.icon)
+                for s in item["c"]["skills"]
+            ],
         )
         for item in scored_challenges
     ]
+    await _log_recommendations(db, user_id, recommendations)
+    return recommendations

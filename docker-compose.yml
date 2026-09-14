@@ -81,6 +81,8 @@ services:
       - /app/.venv
       # Docker socket for lab orchestration (Phase 2+). Scoped and read-mostly:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Pseudonymized research dataset artifacts (Phase 6), persisted across restarts:
+      - ./data/research:/app/data/research
     depends_on:
       postgres:
         condition: service_healthy

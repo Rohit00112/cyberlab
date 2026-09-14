@@ -38,5 +38,9 @@ logs/
 # Docker / infra ephemeral
 *.pid
 
+# Research dataset artifacts (Phase 6)
+data/
+apps/api/data/
+
 # Isolated git worktrees
 .worktrees/.claude/worktrees/

@@ -77,6 +77,11 @@ export function AppNav() {
               Skills
             </Link>
           ) : null}
+          {hasPermission("analytics.research") ? (
+            <Link href="/research" className="hover:underline">
+              Research
+            </Link>
+          ) : null}
           <Link href="/profile" className="hover:underline">
             Profile
           </Link>

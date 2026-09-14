@@ -44,6 +44,7 @@ docker compose exec api uv run alembic upgrade head
 | `faculty` | `faculty` | faculty |
 | `labadmin` | `labadmin` | lab_admin |
 | `student` | `student` | student |
+| `researcher` | `researcher` | researcher |
 
 > Dev-only credentials. Change before any production use.
 
@@ -88,11 +89,30 @@ User-facing surface (all gated by RBAC):
 | Faculty analytics | `/analytics` (summary, skills, per-challenge difficulty) + `/analytics/students/[id]` drill-down |
 | Competitions | `/competitions`, `/admin/competitions` |
 | Admin | challenges, labs, users, audit trail |
+| Research | `/research` hub → datasets (pseudonymized exports), insights, knowledge graph, experiment registry (researcher role) |
 
 Lab-flagged challenges: each running lab receives a unique per-session flag written to
 its filesystem (default `/flag.txt`). The API stores only the SHA-256 hash; submissions may
 optionally carry `lab_id`, forcing validation against that live session's flag and rejecting
 stale/foreign/non-running sessions.
+
+### Research platform (Phase 6, researcher role)
+
+- **Datasets** — build on-demand, pseudonymized exports (`participant_id` = HMAC of user id;
+  PII stripped) of submissions, skill profiles, badges, hint usage, lab activity, learning
+  progress, and engagements. Each export is a JSON/CSV snapshot that auto-expires
+  (`research_dataset_expiry_days`, default 30) and lives under the `data/research` volume.
+- **Insights & graph** — live aggregate metrics (learning, engagement, recommendation quality,
+  challenge difficulty) and a knowledge graph (skills/challenges/categories with
+  `requires`/`in`/`parent`/`co_solved`/`step` edges).
+- **Experiment registry** — a ledger for offline ML runs; the API never executes models.
+- **Offline scripts** — `apps/api/research/` (`build_graph.py` → `features.py` → `train_gnn.py`)
+  turn an exported graph + submissions into a networkx graph and a sample torch-geometric
+  link-prediction GNN. Optional deps: `python -m pip install -r apps/api/research/requirements-optional.txt`.
+- **Recommendation logs** — every served recommendation is recorded (deduped per
+  user/challenge/day) so recommendation-quality metrics work offline.
+
+Set `RESEARCH_DATA_DIR` to relocate exports (default `data/research`).
 
 ## Phases
 
@@ -101,4 +121,4 @@ stale/foreign/non-running sessions.
 3. **Competition platform** (done): challenges, teams, standings
 4. **Skill intelligence** (done): skill profiles, badges, faculty analytics
 5. **Adaptive learning** (done): recommendations, learning paths, per-challenge difficulty
-6. **Research platform** (not started)
+6. **Research platform** (done): pseudonymized datasets, metrics, knowledge graph, experiment registry, offline GNN scripts, recommendation logs

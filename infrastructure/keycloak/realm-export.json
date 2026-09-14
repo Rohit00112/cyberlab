@@ -16,23 +16,43 @@
     "composite": true
   },
   "roles": {
-      "realm": [
-        { "name": "sysadmin", "description": "Full platform administration" },
-        { "name": "faculty", "description": "Challenge authoring and analytics" },
-        { "name": "competition_organizer", "description": "Manage competitions, teams, scoring" },
-        { "name": "lab_admin", "description": "Manage environments, templates, resources" },
-        { "name": "researcher", "description": "Access approved research analytics" },
-        { "name": "student", "description": "Solve challenges and launch labs" },
-        {
-          "name": "default-roles-cyberlab",
-          "description": "${role_default-roles}",
-          "composite": true,
-          "composites": {
-            "realm": ["student"]
-          }
+    "realm": [
+      {
+        "name": "sysadmin",
+        "description": "Full platform administration"
+      },
+      {
+        "name": "faculty",
+        "description": "Challenge authoring and analytics"
+      },
+      {
+        "name": "competition_organizer",
+        "description": "Manage competitions, teams, scoring"
+      },
+      {
+        "name": "lab_admin",
+        "description": "Manage environments, templates, resources"
+      },
+      {
+        "name": "researcher",
+        "description": "Access approved research analytics"
+      },
+      {
+        "name": "student",
+        "description": "Solve challenges and launch labs"
+      },
+      {
+        "name": "default-roles-cyberlab",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "student"
+          ]
         }
-      ]
-    },
+      }
+    ]
+  },
   "clients": [
     {
       "clientId": "web",
@@ -43,8 +63,12 @@
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"]
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ]
     },
     {
       "clientId": "api",
@@ -56,8 +80,12 @@
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:8000/*"],
-      "webOrigins": ["http://localhost:8000"]
+      "redirectUris": [
+        "http://localhost:8000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8000"
+      ]
     }
   ],
   "users": [
@@ -68,8 +96,17 @@
       "lastName": "Admin",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "admin", "temporary": false }],
-      "realmRoles": ["sysadmin", "faculty"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "sysadmin",
+        "faculty"
+      ]
     },
     {
       "username": "faculty",
@@ -78,8 +115,16 @@
       "lastName": "User",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "faculty", "temporary": false }],
-      "realmRoles": ["faculty"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "faculty",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "faculty"
+      ]
     },
     {
       "username": "labadmin",
@@ -88,8 +133,16 @@
       "lastName": "Admin",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "labadmin", "temporary": false }],
-      "realmRoles": ["lab_admin"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "labadmin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "lab_admin"
+      ]
     },
     {
       "username": "student",
@@ -98,8 +151,34 @@
       "lastName": "User",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "student", "temporary": false }],
-      "realmRoles": ["student"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "student",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "student"
+      ]
+    },
+    {
+      "username": "researcher",
+      "email": "researcher@cyberlab.local",
+      "firstName": "Research",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "researcher",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "researcher"
+      ]
     }
   ]
 }
