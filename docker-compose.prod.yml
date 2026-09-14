@@ -1,0 +1,104 @@
+name: cyberlab-prod
+
+# Production deployment. Overrides/extends docker-compose.yml (docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build).
+# All services run production images; only Caddy publishes ports (80/443).
+services:
+  postgres:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: cyberlab
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: !override []      # never expose DB on the host in prod
+
+  redis:
+    ports: !override []
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    command: ["start", "--proxy-headers=xforwarded"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HOSTNAME: auth.example.org
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8080
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports: !override []
+
+  api:
+    build:
+      context: ./apps/api
+      target: prod
+    command: ["sh", "-c", "python -m scripts.verify_config && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers 2"]
+    env_file: .env
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cyberlab
+      REDIS_URL: redis://redis:6379/0
+      OIDC_ISSUER_URL: https://auth.example.org/realms/cyberlab
+      OIDC_WELL_KNOWN_URL: https://auth.example.org/realms/cyberlab/.well-known/openid-configuration
+      OIDC_CLIENT_ID: api
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+    volumes:
+      # Docker socket for lab orchestration (API is internal-only in prod).
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/research:/app/data/research
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    restart: unless-stopped
+    ports: !override []
+
+  web:
+    build:
+      context: ./apps/web
+      target: prod
+    environment:
+      NEXT_PUBLIC_API_BASE: https://cyberlab.example.org/api/v1
+      NEXT_PUBLIC_KEYCLOAK_ISSUER: https://auth.example.org/realms/cyberlab
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: web
+      NEXT_PUBLIC_WEB_ORIGIN: https://cyberlab.example.org
+      KEYCLOAK_INTERNAL_ISSUER: http://keycloak:8080/realms/cyberlab
+      API_INTERNAL_BASE: http://api:8000/api/v1
+      CI: "true"
+    depends_on:
+      - api
+    restart: unless-stopped
+    ports: !override []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

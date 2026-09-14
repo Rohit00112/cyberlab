@@ -114,6 +114,16 @@ stale/foreign/non-running sessions.
 
 Set `RESEARCH_DATA_DIR` to relocate exports (default `data/research`).
 
+### Operations
+
+Production deployment, observability (JSON logs + Prometheus `/metrics`), backup/restore and
+range-hardening steps are documented in [`docs/OPERATIONS.md`](./docs/OPERATIONS.md). Deploy with:
+
+```bash
+cp .env.production.example .env   # fill real secrets
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
 ## Phases
 
 1. **Platform MVP** (done): auth, RBAC, challenges, submissions, scoring, leaderboard
@@ -122,3 +132,4 @@ Set `RESEARCH_DATA_DIR` to relocate exports (default `data/research`).
 4. **Skill intelligence** (done): skill profiles, badges, faculty analytics
 5. **Adaptive learning** (done): recommendations, learning paths, per-challenge difficulty
 6. **Research platform** (done): pseudonymized datasets, metrics, knowledge graph, experiment registry, offline GNN scripts, recommendation logs
+7. **Platform expansion** (in progress): production readiness (CI, JSON logs, metrics, prod compose, hardening, backups), live GNN recommendations with per-backend evaluation, competition scheduling + event analytics + notifications, Proxmox VM labs

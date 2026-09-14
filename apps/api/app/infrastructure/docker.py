@@ -101,8 +101,32 @@ async def create_and_start_container(
     image: str,
     network: str,
     cmd: list[str] | None = None,
+    cpu_limit: float | None = None,
+    memory_limit_mb: int | None = None,
+    pids_limit: int | None = None,
 ) -> tuple[str, str]:
-    """Create and start a container on the given network; return (id, ip)."""
+    """Create and start a container on the given network; return (id, ip).
+
+    Resource limits default from settings (PRD §44/§47): a CPU cap (in cores),
+    a memory cap (MB) and a process cap. All three are enforced by Docker.
+    """
+    settings = get_settings()
+    host_config: dict[str, Any] = {"NetworkMode": network}
+    if cpu_limit not in (None, 0):
+        host_config["NanoCpus"] = int(cpu_limit * 1_000_000_000)
+    if memory_limit_mb not in (None, 0):
+        host_config["Memory"] = memory_limit_mb * 1024 * 1024
+        host_config["MemorySwap"] = memory_limit_mb * 1024 * 1024
+    if pids_limit not in (None, 0):
+        host_config["PidsLimit"] = pids_limit
+    if "NanoCpus" not in host_config and settings.lab_cpu_limit > 0:
+        host_config["NanoCpus"] = int(settings.lab_cpu_limit * 1_000_000_000)
+    if "Memory" not in host_config and settings.lab_memory_limit_mb > 0:
+        memory = settings.lab_memory_limit_mb * 1024 * 1024
+        host_config["Memory"] = host_config["MemorySwap"] = memory
+    if "PidsLimit" not in host_config and settings.lab_pids_limit > 0:
+        host_config["PidsLimit"] = settings.lab_pids_limit
+
     status, body = await _request(
         "POST",
         f"/v1.24/containers/create?name={name}",
@@ -111,7 +135,7 @@ async def create_and_start_container(
             "Cmd": cmd or ["sleep", "infinity"],
             "Tty": True,
             "AttachStdout": False,
-            "HostConfig": {"NetworkMode": network},
+            "HostConfig": host_config,
         },
     )
     _ensure_status(status, {201}, "container create")

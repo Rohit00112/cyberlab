@@ -49,6 +49,16 @@ Cyber Range (Docker)     ─┘        (LabProvider abstraction → Proxmox in P
     `train_gnn.py`), so researchers iterate without optional deps baked into the platform.
 11. **Datasets are delete/expire-visible** — expired downloads return 410 Gone; deletion audits
     `research.dataset.download`/delete and is restricted to dataset owners or `user.manage`.
+12. **Production posture** — a production compose profile layers Caddy TLS in front of a
+    worker uvicorn API + standalone Next build; only Caddy publishes ports. Containers run
+    non-root; `/docs`/`/openapi.json` are disabled and an entrypoint guard
+    (`scripts/verify_config.py`) refuses placeholder secrets when `ENVIRONMENT=production`.
+    Observability is dependency-light: JSON request logs with request ids plus a
+    Prometheus-text `/metrics` (PRD §47). Backups cover DB + config + challenge definitions
+    (PRD §51); lab instances stay disposable.
+13. **Lab resource limits + expiry sweep** — every lab container runs under CPU/memory/pid caps
+    enforced in the Docker provider, and expiry is enforced by a background maintenance task in
+    addition to the lazy read-path (PRD §18/§44). Extended in Phase 7 to Proxmox VMs.
 
 ## Deviations from PRD recommendations (all deliberate for MVP)
 

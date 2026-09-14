@@ -1,8 +1,16 @@
+import uuid
+from collections.abc import AsyncIterator
+
+import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.api.deps import CurrentUser, get_current_user
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.session import get_db
+from app.main import app
+from app.models import User
 
 
 @pytest.fixture
@@ -16,16 +24,6 @@ async def test_db():
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
-
-import uuid
-from collections.abc import AsyncIterator
-
-import httpx
-
-from app.api.deps import CurrentUser, get_current_user
-from app.db.session import get_db
-from app.main import app
-from app.models import User
 
 
 def _student(sub: str = "student-sub-test") -> CurrentUser:
@@ -47,7 +45,14 @@ def _faculty(sub: str = "faculty-sub-test") -> CurrentUser:
 async def _ensure_user(factory, user: CurrentUser) -> None:
     async with factory() as db:
         if await db.get(User, user.id) is None:
-            db.add(User(id=user.id, keycloak_sub=user.keycloak_sub, email=f"{user.keycloak_sub}@cyberlab.test", display_name="Test User"))
+            db.add(
+                User(
+                    id=user.id,
+                    keycloak_sub=user.keycloak_sub,
+                    email=f"{user.keycloak_sub}@cyberlab.test",
+                    display_name="Test User",
+                )
+            )
             await db.commit()
 
 @pytest.fixture

@@ -1,0 +1,22 @@
+{
+	# Production reverse proxy (TLS terminated here; only the browser-facing surface is exposed).
+	admin example.org
+}
+
+# Student-facing web + API on one origin; the API is NOT published directly.
+cyberlab.example.org {
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /health {
+		reverse_proxy api:8000
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# Keycloak is only reachable via this hostname; the DB/range stay internal.
+auth.example.org {
+	reverse_proxy keycloak:8080
+}

@@ -15,6 +15,8 @@ from app.api.health import router as health_router
 from app.api.hints import router as hints_router
 from app.api.labs import router as labs_router
 from app.api.leaderboard import router as leaderboard_router
+from app.api.metrics import metrics_router
+from app.api.middleware import RequestContextMiddleware
 from app.api.paths import router as paths_router
 from app.api.recommendations import router as recommendations_router
 from app.api.research import router as research_router
@@ -30,18 +32,31 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    import asyncio
+
+    from app.services.maintenance import lab_maintenance_loop
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(lab_maintenance_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        await task
 
 
 def create_app() -> FastAPI:
+    show_docs = not settings.is_production
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        docs_url="/docs",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if show_docs else None,
+        openapi_url="/openapi.json" if show_docs else None,
+        redoc_url="/redoc" if show_docs else None,
         lifespan=lifespan,
     )
 
+    app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -51,6 +66,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(metrics_router)
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(audit_router, prefix="/api/v1")
     app.include_router(badges_router, prefix="/api/v1")

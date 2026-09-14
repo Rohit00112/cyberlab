@@ -285,18 +285,18 @@ async def expire_lab(
     return await _to_out(db, lab)
 
 
-async def my_labs(db: AsyncSession, user: CurrentUser) -> list[LabOut]:
-    rows = (
-        await db.scalars(
-            select(LabInstance)
-            .where(LabInstance.user_id == user.id)
-            .order_by(LabInstance.created_at.desc())
-        )
-    ).all()
+async def expire_stale_labs(db: AsyncSession) -> int:
+    """Expire overdue running labs and fail provisioning-stuck labs.
 
-    shadowed: bool = False
+    Returns the number of labs whose status changed. Called by read paths and
+    by the background maintenance sweep (PRD §18 "every environment must have
+    an expiration time", §44 session monitoring). Containers are stopped but
+    deliberately not removed — a later destroy pass or admin terminate cleans up.
+    """
+    changed = 0
     now = datetime.now(UTC)
     settings = get_settings()
+    rows = (await db.scalars(select(LabInstance))).all()
     for lab in rows:
         if (
             lab.status == "running"
@@ -309,16 +309,28 @@ async def my_labs(db: AsyncSession, user: CurrentUser) -> list[LabOut]:
                 except DockerError:
                     pass
             lab.status = "expired"
-            shadowed = True
+            changed += 1
         elif lab.status == "provisioning" and lab.created_at:
             if now - lab.created_at.replace(tzinfo=UTC) > timedelta(
                 minutes=settings.lab_provisioning_timeout_minutes
             ):
                 lab.status = "error"
                 lab.error_message = "Provisioning timed out."
-                shadowed = True
-    if shadowed:
+                changed += 1
+    if changed:
         await db.commit()
+    return changed
+
+
+async def my_labs(db: AsyncSession, user: CurrentUser) -> list[LabOut]:
+    await expire_stale_labs(db)
+    rows = (
+        await db.scalars(
+            select(LabInstance)
+            .where(LabInstance.user_id == user.id)
+            .order_by(LabInstance.created_at.desc())
+        )
+    ).all()
 
     return [await _to_out(db, lab) for lab in rows]
 

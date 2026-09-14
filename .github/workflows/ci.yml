@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    name: API (lint + tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cyberlab
+          POSTGRES_PASSWORD: cyberlab
+          POSTGRES_DB: cyberlab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cyberlab -d cyberlab"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        volumes:
+          - ./infrastructure/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.11"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Lint (ruff)
+        run: uv run ruff check app scripts tests research
+      - name: Tests (pytest + coverage)
+        env:
+          DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab@localhost:5432/cyberlab
+        run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=50
+
+  web:
+    name: Web (lint + types + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint (eslint)
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Build
+        run: pnpm build

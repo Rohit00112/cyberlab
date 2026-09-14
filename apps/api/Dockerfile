@@ -19,5 +19,12 @@ COPY . .
 FROM base AS prod
 COPY --from=deps /app/.venv /.venv
 COPY . .
-RUN rm -rf tests
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+RUN rm -rf tests \
+    && useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/data/research \
+    && chown -R appuser:appuser /app
+USER appuser
+# Refuse to boot with placeholder secrets in production (see scripts/verify_config.py).
+CMD ["sh", "-c", "python -m scripts.verify_config && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"
