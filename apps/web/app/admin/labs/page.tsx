@@ -114,11 +114,7 @@ export default async function AdminLabsPage({
                       {lab.error_message ?? lab.container_name ?? "—"}
                     </TableCell>
                     <TableCell className="text-right">
-                      {lab.status === "running" || lab.status === "provisioning" ? (
-                        <TerminateLab lab={lab} />
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
+                      <TerminateLab lab={lab} />
                     </TableCell>
                   </TableRow>
                 ))}

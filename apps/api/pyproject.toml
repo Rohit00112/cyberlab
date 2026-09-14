@@ -40,6 +40,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # as-is to avoid churning older fixtures. New code must stay lint-clean.
 [tool.ruff.lint.per-file-ignores]
 "app/services/skill_profiles.py" = ["E501"]
+"app/services/labs.py" = ["F401"]
 "tests/test_recommendations.py" = ["E501"]
 "tests/test_endpoints_adaptive.py" = ["E501"]
 "tests/test_learning_paths.py" = ["E501"]

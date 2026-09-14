@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,3 +55,28 @@ class AdminUserUpdate(BaseModel):
 
     is_active: bool | None = None
     roles: list[str] | None = None
+
+
+class PortfolioSkill(BaseModel):
+    skill_id: str
+    name: str
+    score: float
+    confidence: float
+    solved_count: int
+
+
+class StudentPortfolioOut(BaseModel):
+    """Public verifiable student portfolio (PRD §33)."""
+
+    id: uuid.UUID
+    display_name: str | None = None
+    created_at: datetime | None = None
+    points: int = 0
+    solved_count: int = 0
+    attempts: int = 0
+    rank: int | None = None
+    recent_solves: list[ProfileSolve] = Field(default_factory=list)
+    earned_badges: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[PortfolioSkill] = Field(default_factory=list)
+    verification_hash: str
+

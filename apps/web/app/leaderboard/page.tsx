@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 
 import { AppNav } from "@/components/app-nav";
 import {
@@ -47,7 +48,12 @@ export default async function LeaderboardPage() {
                   <TableRow key={entry.user_id}>
                     <TableCell className="font-mono tabular-nums">{entry.rank}</TableCell>
                     <TableCell className="font-medium">
-                      {entry.display_name ?? "Anonymous"}
+                      <Link
+                        href={`/portfolio/${entry.user_id}`}
+                        className="hover:underline text-foreground"
+                      >
+                        {entry.display_name ?? "Anonymous"}
+                      </Link>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{entry.solved_count}</TableCell>
                     <TableCell className="text-right font-semibold tabular-nums text-primary">

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -13,7 +14,13 @@ from app.models.audit_logs import AuditLog
 from app.models.challenges import Challenge
 from app.models.submissions import Submission
 from app.models.users import User
-from app.schemas.users import AdminUserOut, ProfileSolve, UserProfile
+from app.schemas.users import (
+    AdminUserOut,
+    PortfolioSkill,
+    ProfileSolve,
+    StudentPortfolioOut,
+    UserProfile,
+)
 
 
 async def sync_user(db: AsyncSession, claims: dict) -> User:
@@ -105,6 +112,114 @@ async def get_profile(db: AsyncSession, user_id: uuid.UUID, *, roles: list[str])
         solved_count=int(solved_count),
         attempts=int(attempts),
         recent_solves=recent_solves,
+    )
+
+
+async def get_public_portfolio(db: AsyncSession, user_id: uuid.UUID) -> StudentPortfolioOut:
+    """Public verifiable student portfolio (PRD §33)."""
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Student portfolio not found"
+        )
+
+    row = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(Submission.earned_points), 0),
+                func.count().filter(Submission.is_correct),
+                func.count(),
+            ).where(Submission.user_id == user_id)
+        )
+    ).one()
+    points, solved_count, attempts = row
+
+    higher_points = await db.scalar(
+        select(func.count(func.distinct(Submission.user_id)))
+        .where(Submission.is_correct.is_(True))
+        .group_by(Submission.user_id)
+        .having(func.sum(Submission.earned_points) > points)
+    )
+    rank = (higher_points or 0) + 1 if points > 0 else None
+
+    solves = (
+        await db.execute(
+            select(
+                Submission.challenge_id,
+                Challenge.slug,
+                Challenge.title,
+                Challenge.points,
+                Challenge.skills,
+                Submission.created_at,
+            )
+            .join(Challenge, Challenge.id == Submission.challenge_id)
+            .where(
+                Submission.user_id == user_id,
+                Submission.is_correct.is_(True),
+            )
+            .order_by(Submission.created_at.desc())
+            .limit(20)
+        )
+    ).all()
+
+    recent_solves = [
+        ProfileSolve(
+            challenge_id=challenge_id,
+            slug=slug,
+            title=title,
+            points=points_val,
+            skills=list(skills or []),
+            solved_at=created_at,
+        )
+        for challenge_id, slug, title, points_val, skills, created_at in solves
+    ]
+
+    from app.services.badges import earned_badges
+
+    badges = await earned_badges(db, user_id)
+    badges_out = [
+        {
+            "id": str(b.id),
+            "code": b.code,
+            "name": b.name,
+            "description": b.description,
+            "icon": b.icon,
+            "skill_name": b.skill_name,
+            "earned_at": b.earned_at.isoformat(),
+        }
+        for b in badges
+    ]
+
+    from app.services.skills import compute_user_scores
+
+    skills_map = await compute_user_scores(db, user_id)
+    skills_out = [
+        PortfolioSkill(
+            skill_id=str(sid),
+            name=sdata["name"],
+            score=sdata["score"],
+            confidence=sdata["confidence"],
+            solved_count=sdata["solved_count"],
+        )
+        for sid, sdata in skills_map.items()
+        if sdata["solved_count"] > 0
+    ]
+
+    raw = f"cyberlab:portfolio:{user.id}:{points}:{solved_count}:{user.created_at}"
+    verification_hash = hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    return StudentPortfolioOut(
+        id=user.id,
+        display_name=user.display_name,
+        created_at=user.created_at,
+        points=int(points),
+        solved_count=int(solved_count),
+        attempts=int(attempts),
+        rank=rank,
+        recent_solves=recent_solves,
+        earned_badges=badges_out,
+        skills=skills_out,
+        verification_hash=verification_hash,
     )
 
 

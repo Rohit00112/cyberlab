@@ -9,6 +9,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LabLogsModal } from "@/components/labs/lab-logs-modal";
 import { ApiError, api } from "@/lib/api";
 import { LAB_STATUS_LABELS, type Lab } from "@/lib/challenges/types";
 
@@ -17,6 +18,7 @@ export default function LabsPage() {
   const [labs, setLabs] = useState<Lab[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeLogLab, setActiveLogLab] = useState<Lab | null>(null);
 
   useEffect(() => {
     api
@@ -84,6 +86,13 @@ export default function LabsPage() {
                       {lab.network_name} · {lab.expires_at ? `expires ${lab.expires_at.replace("T", " ").slice(0, 16)} UTC` : ""}
                     </p>
                     <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setActiveLogLab(lab)}
+                      >
+                        Logs
+                      </Button>
                       {lab.status === "running" ? (
                         <Button
                           size="sm"
@@ -121,6 +130,12 @@ export default function LabsPage() {
             ))
           )}
         </div>
+        <LabLogsModal
+          labId={activeLogLab?.id ?? ""}
+          isOpen={Boolean(activeLogLab)}
+          onClose={() => setActiveLogLab(null)}
+          title={activeLogLab?.challenge_title ?? undefined}
+        />
         <p className="mt-6 text-xs text-muted-foreground">
           Signed in as {user?.display_name ?? "student"}.
         </p>

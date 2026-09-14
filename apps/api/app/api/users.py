@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
 from app.db.session import get_db
-from app.schemas.users import AdminUserOut, AdminUserUpdate, UserProfile
-from app.services.users import get_profile, list_users, update_user
+from app.schemas.users import AdminUserOut, AdminUserUpdate, StudentPortfolioOut, UserProfile
+from app.services.users import get_profile, get_public_portfolio, list_users, update_user
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -23,6 +23,15 @@ async def my_profile(
 ) -> UserProfile:
     """Personal profile: identity, join date, stats, recent solves."""
     return await get_profile(db, user.id, roles=user.roles)
+
+
+@router.get("/{user_id}/portfolio", response_model=StudentPortfolioOut)
+async def get_user_portfolio(
+    user_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StudentPortfolioOut:
+    """Public verifiable student portfolio (PRD §33)."""
+    return await get_public_portfolio(db, user_id)
 
 
 @router.get("", response_model=list[AdminUserOut])

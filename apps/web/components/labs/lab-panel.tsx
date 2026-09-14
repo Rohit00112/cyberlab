@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { LabLogsModal } from "@/components/labs/lab-logs-modal";
 import { ApiError, api } from "@/lib/api";
 import {
   LAB_STATUS_LABELS,
@@ -21,6 +22,7 @@ export function LabPanel({
   const [labs, setLabs] = useState<Lab[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
     api
@@ -94,16 +96,27 @@ export function LabPanel({
             <Badge variant={lab.status === "running" ? "default" : "outline"}>
               {LAB_STATUS_LABELS[lab.status]}
             </Badge>
-            {lab.status === "running" ? (
-              <Button size="sm" variant="outline" onClick={() => act("stop")} disabled={busy}>
-                Stop
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowLogs(true)}>
+                Logs
               </Button>
-            ) : (
-              <Button size="sm" variant="outline" onClick={() => act("reset")} disabled={busy}>
-                Reset
-              </Button>
-            )}
+              {lab.status === "running" ? (
+                <Button size="sm" variant="outline" onClick={() => act("stop")} disabled={busy}>
+                  Stop
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => act("reset")} disabled={busy}>
+                  Reset
+                </Button>
+              )}
+            </div>
           </div>
+          <LabLogsModal
+            labId={lab.id}
+            isOpen={showLogs}
+            onClose={() => setShowLogs(false)}
+            title={challenge.title}
+          />
           {lab.status === "provisioning" ? (
             <p className="text-xs text-muted-foreground">
               Container is starting — refresh shortly or hit Reset.

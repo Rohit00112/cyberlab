@@ -243,3 +243,22 @@ async def test_student_cannot_access_directory(test_db):
         res = await client.get("/api/v1/users")
         assert res.status_code == 403
     app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_public_portfolio_endpoint(test_db):
+    student = _student(sub=f"portfolio-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, student)
+
+    async with _make_client(test_db, student) as client:
+        res = await client.get(f"/api/v1/users/{student.id}/portfolio")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["id"] == str(student.id)
+        assert "verification_hash" in data
+        assert len(data["verification_hash"]) == 16
+        assert "recent_solves" in data
+        assert "earned_badges" in data
+        assert "skills" in data
+    app.dependency_overrides.clear()
+

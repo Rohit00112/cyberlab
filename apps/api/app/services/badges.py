@@ -333,4 +333,18 @@ async def grant_eligible_badges(
             details={"granted": True},
             request=request,
         )
+        try:
+            from app.services.notifications import create_notification
+
+            icon_prefix = f"{badge.icon} " if badge.icon else "🏅 "
+            await create_notification(
+                db,
+                user_id=user_id,
+                title=f"{icon_prefix}Badge Unlocked: {badge.name}!",
+                body=badge.description or f"You earned the {badge.name} badge.",
+                link="/badges",
+                source="badge",
+            )
+        except Exception:
+            pass
     return result
