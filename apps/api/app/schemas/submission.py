@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class FlagSubmit(BaseModel):
     flag: str = Field(min_length=1, max_length=500)
+    lab_id: uuid.UUID | None = None
 
 
 class SubmissionOut(BaseModel):

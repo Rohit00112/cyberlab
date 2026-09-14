@@ -34,6 +34,8 @@ class LabInstance(Base):
     container_name: Mapped[str | None] = mapped_column(String(128))
     network_name: Mapped[str | None] = mapped_column(String(128))
     connection_hint: Mapped[str | None] = mapped_column(Text)
+    flag_hash: Mapped[str | None] = mapped_column(String(64))
+    flag_path: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
+from app.core.flags import generate_lab_flag, hash_flag
 from app.infrastructure import docker as docker_adapter
 from app.infrastructure.docker import DockerError
 from app.models.challenges import Challenge
@@ -34,6 +35,7 @@ def _lab_settings(challenge: Challenge | None) -> dict:
     image = cfg.get("image") or settings.lab_image
     expiry = cfg.get("expiry_minutes") or settings.lab_default_expiry_minutes
     max_instances = cfg.get("max_instances")
+    flag_path = cfg.get("flag_path") or "/flag.txt"
     caps = {
         "image": image,
         "expiry_minutes": max(
@@ -42,8 +44,41 @@ def _lab_settings(challenge: Challenge | None) -> dict:
         "max_instances": (
             int(max_instances) if isinstance(max_instances, int) and max_instances >= 1 else None
         ),
+        "flag_path": flag_path,
     }
     return caps
+
+
+def _container_name(lab: LabInstance) -> str:
+    return f"lab-{str(lab.user_id)[:8]}-{str(lab.id)[:8]}"
+
+
+def _flag_command(flag_path: str, flag: str) -> list[str]:
+    """Shell command that writes the per-session flag into the container then parks it."""
+    return ["/bin/sh", "-c", f"printf '%s\\n' '{flag}' > {flag_path} && sleep infinity"]
+
+
+async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:
+    """Create and start the container, injecting a fresh per-session flag.
+
+    Fills ``container_id``/``container_name``/``flag_hash``/``flag_path`` and the
+    connection hint. Only the flag's SHA-256 hash is persisted (PRD §20, §49).
+    """
+    flag_path = lab_cfg["flag_path"]
+    flag = generate_lab_flag()
+    name = lab.container_name or _container_name(lab)
+    container_id, ip = await docker_adapter.create_and_start_container(
+        name, lab_cfg["image"], lab.network_name, cmd=_flag_command(flag_path, flag)
+    )
+    lab.container_id = container_id
+    lab.container_name = name
+    lab.flag_hash = hash_flag(flag)
+    lab.flag_path = flag_path
+    lab.connection_hint = (
+        f"Container {name} is live at {ip} on isolated network {lab.network_name}. "
+        f"The flag for this session is written to {flag_path} inside the container. "
+        f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
+    )
 
 
 async def _to_out(db: AsyncSession, lab: LabInstance) -> LabOut:
@@ -117,17 +152,7 @@ async def launch_lab(
 
     try:
         await docker_adapter.ensure_network(lab.network_name)
-        name = f"lab-{str(user.id)[:8]}-{str(lab.id)[:8]}"
-        container_id, ip = await docker_adapter.create_and_start_container(
-            name, lab_cfg["image"], lab.network_name
-        )
-        lab.container_id = container_id
-        lab.container_name = name
-        lab.connection_hint = (
-            f"Container {name} is live at {ip} on isolated network {lab.network_name}. "
-            f"Shares the {lab_cfg['image']} image; will expire in "
-            f"{lab_cfg['expiry_minutes']} minutes."
-        )
+        await _start_container(lab, lab_cfg)
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
@@ -205,17 +230,9 @@ async def reset_lab(
         except DockerError:
             pass
 
-    name = f"lab-{str(user.id)[:8]}-{str(lab.id)[:8]}"
     try:
         await docker_adapter.ensure_network(lab.network_name)
-        container_id, ip = await docker_adapter.create_and_start_container(
-            name, lab_cfg["image"], lab.network_name
-        )
-        lab.container_id = container_id
-        lab.container_name = name
-        lab.connection_hint = (
-            f"Container {name} is live at {ip} on isolated network {lab.network_name}."
-        )
+        await _start_container(lab, lab_cfg)
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]

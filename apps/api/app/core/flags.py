@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import secrets
 
 DIFFICULTIES = {"beginner", "intermediate", "advanced"}
 STATUSES = {"draft", "published", "archived"}
@@ -35,6 +36,11 @@ def hash_flag(flag: str) -> str:
 
 def verify_flag(candidate: str, expected_hash: str) -> bool:
     return hash_flag(candidate) == expected_hash
+
+
+def generate_lab_flag() -> str:
+    """Random per-session lab flag (e.g. ``IIC{lab-5f3a...}``)."""
+    return f"IIC{{lab-{secrets.token_hex(8)}}}"
 
 
 def slugify(value: str) -> str:

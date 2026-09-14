@@ -284,3 +284,130 @@ async def test_lazy_expiry_marks_overdue_running_lab(test_db):
         assert res.status_code == 200
         assert res.json()[0]["status"] == "expired"
     app.dependency_overrides.clear()
+
+
+_LAST_FLAG = {}
+
+
+@pytest.fixture
+def capture_flag_cmd(monkeypatch):
+    """Capture the per-session flag injected into each container command."""
+    _LAST_FLAG.clear()
+
+    async def create_and_start_container(
+        name: str, image: str, network: str, cmd: list[str] | None = None
+    ) -> tuple[str, str]:
+        _LAST_FLAG["flag"] = cmd[2].split("'")[3] if cmd else None
+        return HOST_ID, "172.30.0.10"
+
+    monkeypatch.setattr(
+        docker_module, "create_and_start_container", create_and_start_container
+    )
+
+
+def _flag_submitter(sub: str) -> CurrentUser:
+    return CurrentUser(
+        id=uuid.uuid4(),
+        keycloak_sub=sub,
+        roles=["student"],
+        permissions=["challenge.view", "challenge.attempt", "lab.launch", "submission.create"],
+    )
+
+
+async def test_submit_with_running_lab_flag(test_db, capture_flag_cmd):
+    user = _flag_submitter(sub=f"lab-flag-ok-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lf_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, user) as client:
+        lab = (
+            await client.post(f"/api/v1/challenges/{challenge.id}/lab/launch")
+        ).json()
+        assert lab["status"] == "running"
+        assert _LAST_FLAG["flag"].startswith("IIC{lab-")
+
+        res = await client.post(
+            f"/api/v1/challenges/{challenge.id}/submissions",
+            json={"flag": _LAST_FLAG["flag"], "lab_id": lab["id"]},
+        )
+        assert res.status_code == 201
+        body = res.json()
+        assert body["correct"] is True
+        assert body["points"] == 50
+    app.dependency_overrides.clear()
+
+
+async def test_submit_static_flag_fails_when_lab_id_given(test_db, capture_flag_cmd):
+    user = _flag_submitter(sub=f"lab-flag-mix-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lfx_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, user) as client:
+        lab = (
+            await client.post(f"/api/v1/challenges/{challenge.id}/lab/launch")
+        ).json()
+        res = await client.post(
+            f"/api/v1/challenges/{challenge.id}/submissions",
+            json={"flag": CORRECT, "lab_id": lab["id"]},
+        )
+        assert res.status_code == 201
+        assert res.json()["correct"] is False
+    app.dependency_overrides.clear()
+
+
+async def test_submit_with_lab_id_mismatched_challenge(test_db, capture_flag_cmd):
+    user = _flag_submitter(sub=f"lab-flag-mism-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge_a = await _seed_challenge(test_db, slug=f"_lfa_{uuid.uuid4().hex[:6]}")
+    challenge_b = await _seed_challenge(test_db, slug=f"_lfb_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, user) as client:
+        lab = (
+            await client.post(f"/api/v1/challenges/{challenge_a.id}/lab/launch")
+        ).json()
+        res = await client.post(
+            f"/api/v1/challenges/{challenge_b.id}/submissions",
+            json={"flag": CORRECT, "lab_id": lab["id"]},
+        )
+        assert res.status_code == 400
+    app.dependency_overrides.clear()
+
+
+async def test_submit_with_stopped_lab_rejected(test_db, capture_flag_cmd):
+    user = _flag_submitter(sub=f"lab-flag-stop-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lfs_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, user) as client:
+        lab = (
+            await client.post(f"/api/v1/challenges/{challenge.id}/lab/launch")
+        ).json()
+        await client.post(f"/api/v1/labs/{lab['id']}/stop")
+        res = await client.post(
+            f"/api/v1/challenges/{challenge.id}/submissions",
+            json={"flag": CORRECT, "lab_id": lab["id"]},
+        )
+        assert res.status_code == 409
+    app.dependency_overrides.clear()
+
+
+async def test_submit_with_someone_elses_lab_rejected(test_db, capture_flag_cmd):
+    owner = _flag_submitter(sub=f"lab-flag-owner-{uuid.uuid4().hex[:6]}")
+    intruder = _flag_submitter(sub=f"lab-flag-intruder-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, owner)
+    await _ensure_user(test_db, intruder)
+    challenge = await _seed_challenge(test_db, slug=f"_lfo_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, owner) as client:
+        lab = (
+            await client.post(f"/api/v1/challenges/{challenge.id}/lab/launch")
+        ).json()
+    app.dependency_overrides.clear()
+
+    async with _make_client(test_db, intruder) as client:
+        res = await client.post(
+            f"/api/v1/challenges/{challenge.id}/submissions",
+            json={"flag": CORRECT, "lab_id": lab["id"]},
+        )
+    assert res.status_code == 403
+    app.dependency_overrides.clear()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.flags import verify_flag
 from app.models.challenges import Challenge
 from app.models.hint_reveals import HintReveal
+from app.models.labs import LabInstance
 from app.models.submissions import Submission
 from app.models.users import User
 from app.schemas.submission import (
@@ -27,6 +29,48 @@ from app.schemas.submission import (
 from app.services.users import record_audit
 
 
+async def _expected_flag_hash(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    challenge: Challenge,
+    lab_id: uuid.UUID | None,
+) -> str:
+    """Resolve the hash the submitted flag is checked against.
+
+    When a ``lab_id`` is supplied, the flag must come from that student's own,
+    currently-running lab for this challenge (PRD §19/§80 dynamic per-session
+    flags). Otherwise the challenge's static flag hash is used.
+    """
+    if not lab_id:
+        return challenge.flag_hash
+
+    lab = await db.get(LabInstance, lab_id)
+    if lab is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Lab session not found"
+        )
+    if lab.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if lab.challenge_id != challenge.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lab session does not belong to this challenge",
+        )
+    if lab.status != "running" or lab.flag_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lab session is not running — start it and grab its flag",
+        )
+    now = datetime.now(UTC)
+    if lab.expires_at and now > lab.expires_at.replace(tzinfo=UTC):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lab session has expired — reset to get a fresh flag",
+        )
+    return lab.flag_hash
+
+
 async def submit_flag(
     db: AsyncSession,
     *,
@@ -34,6 +78,7 @@ async def submit_flag(
     challenge: Challenge,
     flag: str,
     can_edit: bool,
+    lab_id: uuid.UUID | None = None,
     request: Any = None,
 ) -> FlagSubmitResult:
     if not can_edit and not challenge.is_published:
@@ -46,7 +91,10 @@ async def submit_flag(
             detail="This challenge has no flag configured",
         )
 
-    correct = verify_flag(flag, challenge.flag_hash)
+    expected_hash = await _expected_flag_hash(
+        db, user_id=user_id, challenge=challenge, lab_id=lab_id
+    )
+    correct = verify_flag(flag, expected_hash)
 
     if correct:
         existing = await db.scalar(
