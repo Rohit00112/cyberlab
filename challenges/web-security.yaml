@@ -1,0 +1,40 @@
+# Web Security challenges
+- title: SQL Injection in the Wild
+  description: Bypass the login form of a deliberately vulnerable web app.
+  instructions: |
+    Launch the provided lab. The login form at /login naively concatenates user
+    input into a SQL query. Log in as the administrator without knowing the password;
+    the flag is written to the container filesystem after a successful admin login.
+  category: Web Security
+  difficulty: intermediate
+  points: 250
+  estimated_minutes: 30
+  flag: IIC{sqli-auth-bypass}
+  flag_format: IIC{...}
+  environment_type: docker
+  lab_config:
+    expiry_minutes: 60
+  skills: [SQL, Web enumeration, Auth bypass]
+  prerequisites: [Understanding of SQL basics, How HTTP forms work]
+  hints:
+    - "Try submitting `' OR '1'='1` as the username and any password."
+    - "The vulnerable query wraps the payload in single quotes."
+
+- title: Leaky Response Headers
+  description: Extract a flag exposed by misconfigured HTTP response headers.
+  instructions: |
+    The staging server embeds a per-release token in a response header that should
+    have been stripped for production. Request the resource and read every header;
+    the value of the leaky header is the flag.
+  category: Web Security
+  difficulty: beginner
+  points: 100
+  estimated_minutes: 15
+  flag: IIC{x-leak-header}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [HTTP, Header analysis, cURL]
+  prerequisites: [Basics of HTTP]
+  hints:
+    - "`curl -v` prints response headers on stderr."
+    - "Look for X- and internal-only header names."

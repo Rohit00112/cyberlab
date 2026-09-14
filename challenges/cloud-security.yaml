@@ -1,0 +1,38 @@
+# Cloud Security challenges
+- title: S3 Bucket Misconfiguration
+  description: Read a publicly listable object that should have been private.
+  instructions: |
+    A marketing team published a bucket to serve assets. The bucket policy also allows
+    `ListBucket` for everyone. List the bucket, download the flagged object, and
+    submit the flag from its contents.
+  category: Cloud Security
+  difficulty: beginner
+  points: 150
+  estimated_minutes: 20
+  flag: IIC{s3-public-bucket}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Cloud storage, IAM policies, Bucket enumeration]
+  prerequisites: [What object storage is]
+  hints:
+    - "An anonymous `ListObjectsV2` on the bucket name reveals keys."
+    - "Policy documents that use wildcard `Principal: *` are a giveaway."
+
+- title: IAM Permission Audit
+  description: Find the over-granted role in a JSON policy document.
+  instructions: |
+    Review the supplied IAM trust policy JSON. One role is meant to only start a
+    build runner but has `s3:PutObject` on the deployment bucket. Submit the flag
+    naming the role id from that policy.
+  category: Cloud Security
+  difficulty: intermediate
+  points: 230
+  estimated_minutes: 25
+  flag: IIC{over-privileged-role}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [IAM, Least privilege, Policy review]
+  prerequisites: [Basic IAM concepts]
+  hints:
+    - "Compare each `Action` list against the documented job description."
+    - "The offending role is the one referenced by the deployment pipeline."

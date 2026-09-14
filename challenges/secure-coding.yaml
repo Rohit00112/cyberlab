@@ -1,0 +1,35 @@
+# Secure Coding challenges
+- title: "Secure Coding: Memory Safety"
+  description: Find the bug class that makes this C snippet exploitable.
+  instructions: |
+    The snippet calls `strcpy(buffer, user_input)` with a fixed-size stack buffer.
+    Submit the flag naming the vulnerability class.
+  category: Secure Coding
+  difficulty: beginner
+  points: 100
+  estimated_minutes: 15
+  flag: IIC{buffer-overflow}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [C, Buffer handling, Code review]
+  prerequisites: [C basics]
+  hints:
+    - "What happens when input is larger than the buffer?"
+
+- title: Format String Leak
+  description: Spot the classic printf misuse in reviewed code.
+  instructions: |
+    The service logs user input with `printf(user_input)`. Submit the flag naming
+    the vulnerability class and the mitigation function family.
+  category: Secure Coding
+  difficulty: intermediate
+  points: 200
+  estimated_minutes: 20
+  flag: IIC{format-string-leak}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [C, Format strings, Code review]
+  prerequisites: [C basics]
+  hints:
+    - "The correct call is `printf(\"%s\", user_input)`."
+    - "The family is `printf`-style: the flag uses the lowercase family name."

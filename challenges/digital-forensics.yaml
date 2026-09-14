@@ -1,0 +1,36 @@
+# Digital Forensics challenges
+- title: Hidden Metadata
+  description: Examine a photo file and extract the flag from its EXIF metadata.
+  instructions: |
+    A JPEG attached to a phishing email was found on the file server. In its EXIF
+    metadata a comment field contains the flag. Open the file and inspect its metadata.
+  category: Digital Forensics
+  difficulty: beginner
+  points: 125
+  estimated_minutes: 15
+  flag: IIC{exif-metadata-leak}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [EXIF, Metadata analysis, Forensics tooling]
+  prerequisites: [Basic image awareness]
+  hints:
+    - "On Linux: `exiftool photo.jpg` or `identify -verbose`."
+
+- title: Strings in the Noise
+  description: Recover a flag from an unknown binary using strings and file analysis.
+  instructions: |
+    Investigators seized a suspicious binary. Run the standard triage steps: identify
+    the file type, extract printable strings, and recover the flag that leaks near a
+    call to `system()`.
+  category: Digital Forensics
+  difficulty: beginner
+  points: 110
+  estimated_minutes: 20
+  flag: IIC{strings-done}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Static analysis, strings, file(1)]
+  prerequisites: [What a binary is]
+  hints:
+    - "`file suspect` then `strings suspect | grep -i IIC`."
+    - "The flag sits in the rodata section next to the shell command."

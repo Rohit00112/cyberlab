@@ -1,0 +1,56 @@
+# Cryptography challenges
+- title: XOR is Not Encryption
+  description: A single-byte XOR cipher hides the flag. Decode it without a key.
+  instructions: |
+    Decrypt the following hex blob that was XOR-encrypted with a single byte:
+    `5e151b5231435f183b551d5f1f515b3e153f1d0b513737`.
+  category: Cryptography
+  difficulty: beginner
+  points: 150
+  estimated_minutes: 25
+  flag: IIC{xor-single-byte}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [XOR, Bash scripting, Pattern recognition]
+  prerequisites: [Bitwise operations]
+  hints:
+    - "Try every byte from 0x00 to 0xFF."
+    - "The plaintext is human-readable and starts with the flag prefix."
+
+- title: Caesar Around the Corner
+  description: Decode a classic Caesar-shifted message hiding a flag.
+  instructions: |
+    The warden's diary contains this message: `Xxdvdu dw wkh frurqh sloxvhw wkhq
+    grawuhh`. Identify the shift, decode the plaintext hint, and submit the flag
+    that codes the referenced countermeasure by wrapping the room (keyword, lowercased).
+  category: Cryptography
+  difficulty: beginner
+  points: 90
+  estimated_minutes: 15
+  flag: IIC{caesar-solved}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Classic ciphers, Frequency analysis]
+  prerequisites: []
+  hints:
+    - "The decoding reads 'Caesar at the corner'."
+
+- title: Hash the Difference
+  description: Recognize a weak hash and produce the flag from an unsalted collision.
+  instructions: |
+    A legacy service stores passwords as plain unsalted MD5. Submit the flag using
+    the known plaintext prefix: take `CyberLabRocks2026` from the leak, find any
+    distinct string that collides with its MD5 under the weaker variant, and submit
+    `IIC{<that-string>}`.
+  category: Cryptography
+  difficulty: advanced
+  points: 350
+  estimated_minutes: 40
+  flag: IIC{md5-collision-ok}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Hashing, MD5, Cryptanalysis]
+  prerequisites: [What a hash is, Why salting matters]
+  hints:
+    - "MD5 collision pairs are widely demonstrated for specific chosen prefixes."
+    - "The flag placeholder simply denotes that you found the technique."

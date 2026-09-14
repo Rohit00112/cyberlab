@@ -1,0 +1,39 @@
+# OSINT challenges
+- title: Geotag the Panorama
+  description: Identify the landmark in a photo to derive the coordinates clue.
+  instructions: |
+    A photo shows a distinctive mountain panorama with a tall flagpole in the left
+    foreground. Identify the location, then submit the flag spelling the nearby map
+    grid reference given in the challenge briefing (IIC{grid-NNNNNNNNN}).
+  category: OSINT
+  difficulty: beginner
+  points: 150
+  estimated_minutes: 30
+  flag: IIC{osint-panorama}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Reverse image search, Geography, Photo context]
+  prerequisites: []
+  hints:
+    - "Reverse-image the skyline to find the named peak."
+    - "Map references in Nepal are typically in UTM grid format."
+
+- title: The Username Revisited
+  description: Reassemble a student's online footprint from screenshots.
+  instructions: |
+    A suspended account posted under the handle `c0d3m0nk` on a defunct forum. The
+    briefing contains three screenshots: an old GitHub profile, a StackOverflow sash,
+    and a travel blog. The flag is the name of the city where three of these profiles
+    intersect.
+  category: OSINT
+  difficulty: intermediate
+  points: 220
+  estimated_minutes: 35
+  flag: IIC{osint-city}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Username correlation, Profile stitching, Search]
+  prerequisites: []
+  hints:
+    - "Search the exact handle quoted on each platform."
+    - "Location tags in the blog photo metadata were redacted — count the cities instead."

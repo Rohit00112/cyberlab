@@ -1,0 +1,41 @@
+# Linux challenges
+- title: Basic Linux Investigation
+  description: Find a suspicious file hidden in the filesystem and recover the flag from it.
+  instructions: |
+    Connect to the provided lab container. A file named flag.txt is not where it
+    should be. Search for it, inspect ownership, timestamps and file contents, then
+    submit the flag you uncover.
+  category: Linux
+  difficulty: beginner
+  points: 100
+  estimated_minutes: 20
+  flag: IIC{linux-investigation-101}
+  flag_format: IIC{...}
+  environment_type: docker
+  lab_config:
+    expiry_minutes: 60
+  skills: [Linux CLI, Filesystem, Basic command usage]
+  prerequisites: [Comfortable with a terminal]
+  hints:
+    - "`find / -name flag.txt 2>/dev/null` is a good starting point."
+
+- title: Linux Account Sleuthing
+  description: Recover a flag hidden in the passwd and shadow file conventions.
+  instructions: |
+    Inside the lab container a long-deleted user account left a clue in the system
+    account files. The flag is assembled from the details of that account. Compare
+    /etc/passwd with current user listing and submit what you find.
+  category: Linux
+  difficulty: beginner
+  points: 120
+  estimated_minutes: 25
+  flag: IIC{etc-passwd-sleuth}
+  flag_format: IIC{...}
+  environment_type: docker
+  lab_config:
+    expiry_minutes: 60
+  skills: [Linux CLI, Account files, Log analysis]
+  prerequisites: [Comfortable with a terminal]
+  hints:
+    - "Users with a shell such as /bin/nologin still appear in /etc/passwd."
+    - "Check the GECOS field for long-forgotten comments."

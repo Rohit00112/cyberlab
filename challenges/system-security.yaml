@@ -1,0 +1,42 @@
+# System Security challenges
+- title: Privilege Escalation Primer
+  description: Exploit a common misconfiguration to read a protected file.
+  instructions: |
+    You have a low-privileged shell in the lab container. A root-owned executable
+    with the SUID bit can be abused to read the flag file. Identify it and recover
+    the flag from the container filesystem.
+  category: System Security
+  difficulty: intermediate
+  points: 275
+  estimated_minutes: 35
+  flag: IIC{suid-privesc}
+  flag_format: IIC{...}
+  environment_type: docker
+  lab_config:
+    expiry_minutes: 60
+  skills: [SUID, Linux permissions, Enumeration]
+  prerequisites: [Linux permissions model, Basic shell]
+  hints:
+    - "Look for SUID binaries with `find / -perm -4000 2>/dev/null`."
+    - "GNU `find` itself can execute commands with its own privileges."
+
+- title: SSH Key Gate
+  description: Log in as another user by exploiting loose key permissions.
+  instructions: |
+    In the lab container you own a copied private key that belongs to user `devops`.
+    The file has mode 0644 so the local ssh client refuses to use it. Fix the mode,
+    locate the authorized keys for devops, and read the flag file from their home.
+  category: System Security
+  difficulty: advanced
+  points: 300
+  estimated_minutes: 40
+  flag: IIC{ssh-key-perms}
+  flag_format: IIC{...}
+  environment_type: docker
+  lab_config:
+    expiry_minutes: 60
+  skills: [SSH, Key management, Linux permissions]
+  prerequisites: [SSH authentication basics, chmod]
+  hints:
+    - "Private keys must not be accessible by others."
+    - "You can still decrypt the public part even without full login."

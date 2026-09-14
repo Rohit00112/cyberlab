@@ -1,0 +1,38 @@
+# Blue Team challenges
+- title: "Blue Team: Spot the Phish"
+  description: Analyse an email header and decide whether the message is malicious.
+  instructions: |
+    Review the supplied email .eml file. Submit the flag once you identify the
+    spoofed sender domain used in the phishing attempt.
+  category: Blue Team
+  difficulty: beginner
+  points: 100
+  estimated_minutes: 20
+  flag: IIC{spoofed-domain}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Email headers, Phishing analysis, SPF/DKIM awareness]
+  prerequisites: []
+  hints:
+    - "`Received:` headers reveal the real sending path."
+    - "Compare `From` with `Return-Path`."
+
+- title: "Log Triage: Failed Logins"
+  description: Correlate auth logs to find the brute-forced account.
+  instructions: |
+    A server export contains /var/log/auth.log. An attacker hammered accounts; one
+    of them eventually succeeded. Identify the successes interleaved with failures
+    and submit the flag embedding the compromised username (IIC{compromised-<user>}).
+  category: Blue Team
+  difficulty: intermediate
+  points: 220
+  estimated_minutes: 30
+  flag: IIC{log-triage-ok}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [Log analysis, Incident response, grep]
+  prerequisites: [Reading logs]
+  hints:
+    - "Chained across a dozen attempts: Accepted password for <user>."
+    - "Successful authentication typically logs `Accepted` near `authenticating`."
+    - "The challenge spoils the answer: just log the right technique."

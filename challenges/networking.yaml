@@ -1,0 +1,37 @@
+# Networking challenges
+- title: "Networking Trivia: TCP Handshake"
+  description: Identify the intended final sequence of a TCP three-way handshake.
+  instructions: |
+    The traditional TCP three-way handshake goes SYN, then SYN-ACK. Submit the flag
+    that names the third packet of a successful handshake.
+  category: Networking
+  difficulty: beginner
+  points: 75
+  estimated_minutes: 10
+  flag: IIC{ack}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [TCP/IP, Packet basics]
+  prerequisites: []
+  hints:
+    - "The last packet confirms the connection is established."
+
+- title: DNS Resolution Trail
+  description: Trace the resolution chain a domain name follows to answer a quiz.
+  instructions: |
+    A typo-squatted domain runs a name server that leaks data. Explain in order:
+    the servers consulted between your resolver and the authoritative answer for
+    the challenge subdomain. Submit the flag naming the resource-record type an
+    attacker would abuse to point you to their machine.
+  category: Networking
+  difficulty: intermediate
+  points: 200
+  estimated_minutes: 25
+  flag: IIC{dns-hijack-cache}
+  flag_format: IIC{...}
+  environment_type: none
+  skills: [DNS, Packet basics]
+  prerequisites: [What DNS does]
+  hints:
+    - "Cache poisoning typically targets additional or answer records."
+    - "The vulnerable record type maps names to addresses."
