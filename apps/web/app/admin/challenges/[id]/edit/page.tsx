@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { AppNav } from "@/components/app-nav";
 import { ChallengeForm } from "@/components/admin/challenge-form";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { canServerUser, serverApiGet, serverSessionUser } from "@/lib/api-server";
 import type { Challenge } from "@/lib/challenges/types";
 

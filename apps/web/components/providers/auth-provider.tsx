@@ -59,12 +59,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(() => {
     setAccessToken(null);
-    window.location.assign("/auth/login");
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full-page nav starts the OIDC/PKCE flow
+    window.location.assign(`${window.location.origin}/auth/login`);
   }, []);
 
   const logout = useCallback(() => {
     setAccessToken(null);
-    window.location.assign("/auth/logout");
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full-page nav needed to clear cookies
+    window.location.assign(`${window.location.origin}/auth/logout`);
   }, []);
 
   return (

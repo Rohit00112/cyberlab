@@ -37,6 +37,11 @@ export function AppNav() {
               Analytics
             </Link>
           ) : null}
+          {hasPermission("learning_path.view") ? (
+            <Link href="/paths" className="hover:underline">
+              Paths
+            </Link>
+          ) : null}
           {hasPermission("challenge.edit") ? (
             <Link href="/admin/challenges" className="hover:underline">
               Manage
@@ -57,9 +62,19 @@ export function AppNav() {
               Comp Admin
             </Link>
           ) : null}
+          {hasPermission("learning_path.manage") ? (
+            <Link href="/admin/paths" className="hover:underline">
+              Path Admin
+            </Link>
+          ) : null}
           {hasPermission("audit.view") ? (
             <Link href="/admin/audit" className="hover:underline">
               Audit
+            </Link>
+          ) : null}
+          {hasPermission("skill.view") ? (
+            <Link href="/skills" className="hover:underline">
+              Skills
             </Link>
           ) : null}
           <Link href="/profile" className="hover:underline">

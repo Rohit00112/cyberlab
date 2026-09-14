@@ -11,7 +11,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import type { Lab, UserProfile, UserStats } from "@/lib/challenges/types";
+import { RecommendationCard } from "@/components/challenges/recommendation-card";
+import type {
+  ChallengeRecommendation,
+  Lab,
+  UserProfile,
+  UserStats,
+} from "@/lib/challenges/types";
 import { LAB_STATUS_LABELS } from "@/lib/challenges/types";
 
 function StatCard({
@@ -40,6 +46,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<UserStats | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [labs, setLabs] = useState<Lab[] | null>(null);
+  const [recommendations, setRecommendations] = useState<ChallengeRecommendation[]>([]);
 
   useEffect(() => {
     api
@@ -56,6 +63,10 @@ export default function DashboardPage() {
         .then(setLabs)
         .catch(() => setLabs(null));
     }
+    api
+      .get<ChallengeRecommendation[]>("/recommendations/challenges?limit=6")
+      .then(setRecommendations)
+      .catch(() => setRecommendations([]));
   }, []);
 
   const activeLabs = labs?.filter(
@@ -125,6 +136,22 @@ export default function DashboardPage() {
               </div>
             </CardContent>
           </Card>
+        ) : null}
+
+        {recommendations.length > 0 ? (
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Recommended for you</h2>
+              <Link href="/challenges" className="text-sm underline">
+                Browse all
+              </Link>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {recommendations.map((rec) => (
+                <RecommendationCard key={rec.challenge_id} recommendation={rec} />
+              ))}
+            </div>
+          </div>
         ) : null}
 
         <div className="mt-6 flex gap-3">

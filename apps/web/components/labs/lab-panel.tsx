@@ -11,7 +11,13 @@ import {
   type Lab,
 } from "@/lib/challenges/types";
 
-export function LabPanel({ challenge }: { challenge: Challenge }) {
+export function LabPanel({
+  challenge,
+  onActiveLabChange,
+}: {
+  challenge: Challenge;
+  onActiveLabChange?: (lab: Lab | null) => void;
+}) {
   const [labs, setLabs] = useState<Lab[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +30,11 @@ export function LabPanel({ challenge }: { challenge: Challenge }) {
   }, [challenge.id]);
 
   const lab = labs?.[0] ?? null;
+
+  useEffect(() => {
+    const active = lab?.status === "running" ? lab : null;
+    onActiveLabChange?.(active);
+  }, [lab, onActiveLabChange]);
 
   async function launchLab() {
     if (busy) return;

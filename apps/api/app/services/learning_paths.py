@@ -28,11 +28,23 @@ async def list_published_paths(db: AsyncSession) -> list[LearningPathSummary]:
     return [LearningPathSummary.model_validate(p) for p in rows]
 
 
+async def list_all_paths(db: AsyncSession) -> list[LearningPathSummary]:
+    """Admin view of every learning path, published or not."""
+    rows = (
+        await db.scalars(
+            select(LearningPath).order_by(LearningPath.title.asc())
+        )
+    ).all()
+    return [LearningPathSummary.model_validate(p) for p in rows]
+
+
 async def create_learning_path(db: AsyncSession, data: LearningPathCreate) -> LearningPathSummary:
     slug = data.slug.strip().lower().replace(" ", "-")
     existing = await db.scalar(select(LearningPath).where(LearningPath.slug == slug))
     if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A learning path with this slug exists")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="A learning path with this slug exists"
+        )
 
     path = LearningPath(
         slug=slug,
@@ -69,7 +81,7 @@ async def add_step(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Challenge already in path"
-        )
+        ) from None
 
 
 async def get_path_with_progress(

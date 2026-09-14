@@ -55,7 +55,8 @@ export default function LabsPage() {
           ) : labs.length === 0 ? (
             <Card>
               <CardContent className="pt-6 text-muted-foreground">
-                No labs yet. Open a challenge with a lab environment and hit "Launch Lab".
+                No labs yet. Open a challenge with a lab environment and press the Launch
+                Lab button on its detail page.
               </CardContent>
             </Card>
           ) : (

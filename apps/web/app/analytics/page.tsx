@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { AppNav } from "@/components/app-nav";
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { serverApiGet } from "@/lib/api-server";
 import type { AnalyticsSummary, SubmissionReview } from "@/lib/challenges/types";
+import type { ChallengeDifficulty, SkillAggregate } from "@/lib/skills/types";
 
 export const dynamic = "force-dynamic";
 
@@ -34,20 +36,41 @@ function StatCard({
   );
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  if (!seconds) return "—";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
 export default async function AnalyticsPage() {
-  const [summaryResult, reviewResult] = await Promise.all([
+  const [summaryResult, reviewResult, skillsResult] = await Promise.all([
     serverApiGet<AnalyticsSummary>("/analytics/summary"),
     serverApiGet<SubmissionReview[]>("/submissions/review?limit=20"),
+    serverApiGet<SkillAggregate[]>("/analytics/skills"),
   ]);
   const denied =
     (summaryResult.ok ? 0 : summaryResult.status) === 403 ||
-    (reviewResult.ok ? 0 : reviewResult.status) === 403;
+    (reviewResult.ok ? 0 : reviewResult.status) === 403 ||
+    (skillsResult.ok ? 0 : skillsResult.status) === 403;
   if (!summaryResult.ok || !reviewResult.ok) {
     if (denied) redirect("/dashboard");
     redirect("/auth/login");
   }
   const summary = summaryResult.data;
   const submissions = reviewResult.data;
+  const skills = skillsResult.ok ? skillsResult.data : [];
+
+  const difficultyResult = await Promise.all(
+    summary.top_challenges.map((row) =>
+      serverApiGet<ChallengeDifficulty>(`/analytics/challenges/${row.challenge_id}/difficulty`),
+    ),
+  );
+  const difficultyByChallenge = new Map<string, ChallengeDifficulty>();
+  summary.top_challenges.forEach((row, i) => {
+    const res = difficultyResult[i];
+    if (res.ok) difficultyByChallenge.set(row.challenge_id, res.data);
+  });
 
   return (
     <>
@@ -118,6 +141,42 @@ export default async function AnalyticsPage() {
           </div>
         </section>
 
+        <section className="mt-8">
+          <h2 className="text-lg font-semibold">Skill coverage</h2>
+          <div className="mt-3">
+            {skills.length === 0 ? (
+              <p className="text-muted-foreground">No skills recorded yet.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Skill</TableHead>
+                    <TableHead className="text-right">Students with evidence</TableHead>
+                    <TableHead className="text-right">Avg. score</TableHead>
+                    <TableHead className="text-right">Solves</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {skills.map((skill) => (
+                    <TableRow key={skill.skill.id}>
+                      <TableCell className="font-medium">{skill.skill.name}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {skill.students_with_evidence}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {skill.avg_score === null ? "—" : skill.avg_score.toFixed(1)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {skill.total_solves}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </section>
+
         <section className="mt-8 grid gap-8 lg:grid-cols-2">
           <div>
             <h2 className="text-lg font-semibold">Per-challenge performance</h2>
@@ -132,25 +191,45 @@ export default async function AnalyticsPage() {
                       <TableHead className="text-right">Attempts</TableHead>
                       <TableHead className="text-right">Solves</TableHead>
                       <TableHead className="text-right">Rate</TableHead>
+                      <TableHead className="text-right">Median time</TableHead>
+                      <TableHead className="text-right">Hint use</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {summary.top_challenges.map((row) => (
-                      <TableRow key={row.challenge_id}>
-                        <TableCell className="font-medium">{row.title}</TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {row.attempts}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {row.solves}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {row.attempts
-                            ? `${((row.solves / row.attempts) * 100).toFixed(0)}%`
-                            : "—"}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {summary.top_challenges.map((row) => {
+                      const diff = difficultyByChallenge.get(row.challenge_id);
+                      return (
+                        <TableRow key={row.challenge_id}>
+                          <TableCell className="font-medium">
+                            <Link
+                              href={`/analytics/challenges/${row.challenge_id}`}
+                              className="hover:underline"
+                            >
+                              {row.title}
+                            </Link>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {row.attempts}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {row.solves}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {row.attempts
+                              ? `${((row.solves / row.attempts) * 100).toFixed(0)}%`
+                              : "—"}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatDuration(diff?.median_seconds)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {diff?.hint_usage === undefined
+                              ? "—"
+                              : `${(diff.hint_usage * 100).toFixed(0)}%`}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               )}
@@ -178,7 +257,12 @@ export default async function AnalyticsPage() {
                           {row.rank}
                         </TableCell>
                         <TableCell className="font-medium">
-                          {row.display_name ?? "Anonymous"}
+                          <Link
+                            href={`/analytics/students/${row.user_id}`}
+                            className="hover:underline"
+                          >
+                            {row.display_name ?? "Anonymous"}
+                          </Link>
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {row.solved_count}

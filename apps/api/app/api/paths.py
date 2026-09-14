@@ -25,6 +25,14 @@ async def list_paths(
 ):
     return await path_service.list_published_paths(db)
 
+
+@router.get("/admin/paths", response_model=list[LearningPathSummary])
+async def admin_list_paths(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("learning_path.manage"))],
+):
+    return await path_service.list_all_paths(db)
+
 @router.get("/paths/{path_id}", response_model=LearningPathDetail)
 async def get_path(
     path_id: uuid.UUID,

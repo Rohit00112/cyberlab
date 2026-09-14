@@ -12,6 +12,7 @@ import {
   difficultyLabel,
   type Challenge,
   type FlagSubmitResult,
+  type Lab,
 } from "@/lib/challenges/types";
 import { LabPanel } from "@/components/labs/lab-panel";
 
@@ -21,6 +22,7 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
   const [flag, setFlag] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<FlagSubmitResult | null>(null);
+  const [activeLab, setActiveLab] = useState<Lab | null>(null);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -29,7 +31,7 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
     try {
       const res = await api.post<FlagSubmitResult>(
         `/challenges/${challenge.id}/submissions`,
-        { flag },
+        activeLab ? { flag, lab_id: activeLab.id } : { flag },
       );
       setResult(res);
       if (res.correct) setFlag("");
@@ -175,7 +177,13 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
               <CardTitle>Lab environment</CardTitle>
             </CardHeader>
             <CardContent className="pt-2">
-              <LabPanel challenge={challenge} />
+              <LabPanel challenge={challenge} onActiveLabChange={setActiveLab} />
+              {activeLab && challenge.environment_type !== "none" ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Submitting with a live lab session — paste the flag from the container
+                  (see the environment).
+                </p>
+              ) : null}
               {challenge.flag_format ? (
                 <p className="mt-3 text-xs text-muted-foreground">
                   Flag format: <code className="text-foreground">{challenge.flag_format}</code>

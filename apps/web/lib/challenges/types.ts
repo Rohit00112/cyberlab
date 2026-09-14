@@ -237,3 +237,15 @@ export interface AdminUser {
   attempts: number;
   created_at: string | null;
 }
+
+export interface ChallengeRecommendation {
+  challenge_id: string;
+  slug: string;
+  title: string;
+  category: string;
+  difficulty: Difficulty;
+  points: number;
+  difficulty_score: number;
+  recommendation_score: number;
+  skills: { id: string; slug: string; name: string; icon?: string | null }[];
+}

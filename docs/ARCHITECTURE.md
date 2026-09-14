@@ -22,9 +22,19 @@ Cyber Range (Docker)     ─┘        (LabProvider abstraction → Proxmox in P
    infrastructure backend (Proxmox later).
 4. **Server-side enforcement** — flags are hashed server-side, scoring and expiry are enforced by
    the API, and all authorization is checked per-request from JWT claims — never from the client.
-5. **Flags stored as salted SHA-256 hashes** (pragmatic for static flags; see PRD §19).
+5. **Flags stored as salted SHA-256 hashes** (pragmatic for static flags; see PRD §19). Lab
+   challenges augment this with **per-session flags**: each container is launched with a fresh
+   `IIC{lab-<hex>}` written to its filesystem (`/flag.txt`), only its hash persists in
+   `lab_instances.flag_hash`, and submissions can bind to a `lab_id` to validate against that
+   live session (ownership + running + not-expired checks, PRD §19/§80).
 6. **Development** — Docker Compose (postgres, redis, keycloak, api hot-reload, web `next dev`).
    Production build uses `standalone` output + `python:3.13-slim` multi-stage images.
+7. **Challenge catalogue as data** — seeds live in `challenges/*.yaml` (per category) and are
+   loaded idempotently by slug via `apps/api/scripts/seed_challenges.py`. Only flag hashes are
+   stored; YAML plaintext is dev-only.
+8. **Adaptive surfaces** — recommendations (`/recommendations/challenges`), learning paths
+   (sequential unlock), and difficulty analytics feed the student-facing UI (dashboard, `/skills`,
+   `/paths`, `/analytics`).
 
 ## Deviations from PRD recommendations (all deliberate for MVP)
 

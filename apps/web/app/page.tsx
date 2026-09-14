@@ -1,16 +1,21 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
 import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Home() {
   const { status, login } = useAuth();
+  const router = useRouter();
 
-  if (status === "authenticated") {
-    // server-side redirect handles the authenticated case; fallback for client nav
-    window.location.assign("/dashboard");
-  }
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace("/dashboard");
+    }
+  }, [status, router]);
 
   return (
     <main className="flex flex-1 items-center justify-center bg-zinc-50 p-6 dark:bg-black">
