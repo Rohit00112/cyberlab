@@ -65,12 +65,22 @@ class ChallengeQualityMetric(BaseModel):
     abandonment_rate: float
 
 
+class SourceRecommendationMetrics(BaseModel):
+    source: str
+    served: int
+    accepted: int
+    solved: int
+    acceptance_rate: float
+    completion_rate: float
+
+
 class MetricsRecommendations(BaseModel):
     served: int
     accepted: int
     solved: int
     acceptance_rate: float
     completion_rate: float
+    per_source: list[SourceRecommendationMetrics] = Field(default_factory=list)
 
 
 class ResearchMetricsOut(BaseModel):

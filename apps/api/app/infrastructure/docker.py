@@ -1,4 +1,4 @@
-"""Thin async client for the Docker Engine API over the unix socket.
+"""Docker lab provider — thin async client for the Docker Engine API over unix socket.
 
 Used by the lab service to provision isolated, per-user containers (Phase 2).
 All orchestration happens server-side — students never get a Docker handle.
@@ -10,9 +10,10 @@ import json
 from typing import Any
 
 from app.core.config import get_settings
+from app.infrastructure.base import LabProvider, LabProviderError
 
 
-class DockerError(RuntimeError):
+class DockerError(LabProviderError):
     """Raised when a Docker Engine operation fails."""
 
 
@@ -79,6 +80,8 @@ def _ensure_status(status: int, ok: set[int], context: str) -> None:
     if status not in ok:
         raise DockerError(f"{context}: Docker Engine returned status {status}")
 
+
+# ------ Standalone functions for backwards compat ------
 
 async def docker_ping() -> bool:
     status, _ = await _request("GET", "/_ping")
@@ -178,3 +181,81 @@ async def remove_container(container_id: str) -> None:
     )
     if status not in (204, 404):
         raise DockerError(f"container remove failed: status {status}")
+
+
+async def container_status(container_id: str) -> dict[str, Any]:
+    """Return container inspection data."""
+    status, body = await _request(
+        "GET", f"/v1.24/containers/{container_id}/json"
+    )
+    if status != 200:
+        return {"error": f"inspect failed: status {status}"}
+    data = json.loads(body or b"{}")
+    state = data.get("State", {})
+    return {
+        "status": state.get("Status", "unknown"),
+        "running": state.get("Running", False),
+        "started_at": state.get("StartedAt"),
+        "finished_at": state.get("FinishedAt"),
+        "exit_code": state.get("ExitCode"),
+        "pid": state.get("Pid"),
+    }
+
+
+async def container_logs(container_id: str, *, tail: int = 100) -> str:
+    """Return recent container log output."""
+    status, body = await _request(
+        "GET", f"/v1.24/containers/{container_id}/logs?stdout=1&stderr=1&tail={tail}"
+    )
+    if status != 200:
+        return f"[logs unavailable: status {status}]"
+    return body.decode("utf-8", "replace")
+
+
+# ------ Provider class ------
+
+class DockerLabProvider(LabProvider):
+    """LabProvider implementation backed by the Docker Engine API."""
+
+    async def ping(self) -> bool:
+        return await docker_ping()
+
+    async def ensure_network(self, name: str) -> None:
+        return await ensure_network(name)
+
+    async def create_lab(
+        self,
+        name: str,
+        image: str,
+        network: str,
+        *,
+        cmd: list[str] | None = None,
+        cpu_limit: float | None = None,
+        memory_limit_mb: int | None = None,
+        pids_limit: int | None = None,
+    ) -> tuple[str, str]:
+        kwargs: dict[str, Any] = {}
+        if cmd is not None:
+            kwargs["cmd"] = cmd
+        if cpu_limit is not None:
+            kwargs["cpu_limit"] = cpu_limit
+        if memory_limit_mb is not None:
+            kwargs["memory_limit_mb"] = memory_limit_mb
+        if pids_limit is not None:
+            kwargs["pids_limit"] = pids_limit
+        return await create_and_start_container(name, image, network, **kwargs)
+
+    async def stop_lab(self, provider_ref: str) -> None:
+        return await stop_container(provider_ref)
+
+    async def remove_lab(self, provider_ref: str) -> None:
+        return await remove_container(provider_ref)
+
+    async def inspect_ip(self, provider_ref: str, network: str) -> str | None:
+        return await inspect_ip(provider_ref, network)
+
+    async def lab_status(self, provider_ref: str) -> dict[str, Any]:
+        return await container_status(provider_ref)
+
+    async def lab_logs(self, provider_ref: str, *, tail: int = 100) -> str:
+        return await container_logs(provider_ref, tail=tail)

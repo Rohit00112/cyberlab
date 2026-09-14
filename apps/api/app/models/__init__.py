@@ -13,6 +13,7 @@ from app.models.competitions import (  # noqa: F401
 from app.models.hint_reveals import HintReveal  # noqa: F401
 from app.models.labs import LabInstance  # noqa: F401
 from app.models.learning_paths import LearningPath, LearningPathStep  # noqa: F401
+from app.models.notifications import Announcement, Notification  # noqa: F401
 from app.models.research import (  # noqa: F401
     RecommendationLog,
     ResearchDataset,

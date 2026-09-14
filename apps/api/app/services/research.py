@@ -45,6 +45,7 @@ from app.schemas.research import (
     ResearchExperimentOut,
     ResearchGraphOut,
     ResearchMetricsOut,
+    SourceRecommendationMetrics,
 )
 
 RESEARCH_DIR_OVERRIDE: Path | None = None
@@ -613,17 +614,39 @@ async def research_metrics(db: AsyncSession) -> ResearchMetricsOut:
     for metric in quality:
         metric.median_solve_seconds = median_by_challenge.get(metric.challenge_id)
 
-    # Recommendation quality (H1).
+    # Recommendation quality (H1) — aggregate + per-source.
     logs = (
         await db.execute(
             select(
                 RecommendationLog.user_id,
                 RecommendationLog.challenge_id,
                 RecommendationLog.generated_at,
+                RecommendationLog.source,
             )
         )
     ).all()
-    accepted, solved = _recommendation_quality(subs, logs)
+    accepted, solved = _recommendation_quality(
+        subs, [(u, c, g) for u, c, g, _s in logs]
+    )
+
+    # Per-source breakdown.
+    by_source: dict[str, list[tuple]] = defaultdict(list)
+    for user_id, challenge_id, generated_at, source in logs:
+        by_source[source].append((user_id, challenge_id, generated_at))
+    per_source: list[SourceRecommendationMetrics] = []
+    for source_key, source_logs in sorted(by_source.items()):
+        s_accepted, s_solved = _recommendation_quality(subs, source_logs)
+        s_served = len(source_logs)
+        per_source.append(
+            SourceRecommendationMetrics(
+                source=source_key,
+                served=s_served,
+                accepted=s_accepted,
+                solved=s_solved,
+                acceptance_rate=round(s_accepted / s_served, 4) if s_served else 0.0,
+                completion_rate=round(s_solved / s_served, 4) if s_served else 0.0,
+            )
+        )
 
     served = len(logs)
     return ResearchMetricsOut(
@@ -636,6 +659,7 @@ async def research_metrics(db: AsyncSession) -> ResearchMetricsOut:
             solved=solved,
             acceptance_rate=round(accepted / served, 4) if served else 0.0,
             completion_rate=round(solved / served, 4) if served else 0.0,
+            per_source=per_source,
         ),
         generated_at=datetime.now(UTC),
     )
@@ -815,7 +839,7 @@ async def research_graph(db: AsyncSession) -> ResearchGraphOut:
         )
     ).all()
     ordered: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
-    for step in path_steps:
+    for (step,) in path_steps:
         ordered[step.learning_path_id].append(step.challenge_id)
     for _path_id, challenge_list in ordered.items():
         for previous, following in zip(challenge_list, challenge_list[1:], strict=False):

@@ -98,6 +98,36 @@ export default async function ResearchInsightsPage() {
           />
         </div>
 
+        {metrics.recommendations.per_source && metrics.recommendations.per_source.length > 0 ? (
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground">Per-backend breakdown</h3>
+            <Table className="mt-2">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Backend</TableHead>
+                  <TableHead className="text-right">Served</TableHead>
+                  <TableHead className="text-right">Accepted</TableHead>
+                  <TableHead className="text-right">Solved</TableHead>
+                  <TableHead className="text-right">Acceptance rate</TableHead>
+                  <TableHead className="text-right">Completion rate</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {metrics.recommendations.per_source.map((src) => (
+                  <TableRow key={src.source}>
+                    <TableCell className="font-mono font-medium">{src.source}</TableCell>
+                    <TableCell className="text-right tabular-nums">{src.served}</TableCell>
+                    <TableCell className="text-right tabular-nums">{src.accepted}</TableCell>
+                    <TableCell className="text-right tabular-nums">{src.solved}</TableCell>
+                    <TableCell className="text-right tabular-nums">{percent(src.acceptance_rate)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{percent(src.completion_rate)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+
         <section className="mt-8">
           <h2 className="text-lg font-semibold">Challenge quality</h2>
           <div className="mt-3">

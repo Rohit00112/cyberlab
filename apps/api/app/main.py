@@ -17,6 +17,7 @@ from app.api.labs import router as labs_router
 from app.api.leaderboard import router as leaderboard_router
 from app.api.metrics import metrics_router
 from app.api.middleware import RequestContextMiddleware
+from app.api.notifications import router as notifications_router
 from app.api.paths import router as paths_router
 from app.api.recommendations import router as recommendations_router
 from app.api.research import router as research_router
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(paths_router, prefix="/api/v1")
     app.include_router(recommendations_router, prefix="/api/v1")
+    app.include_router(notifications_router, prefix="/api/v1")
     app.include_router(research_router, prefix="/api/v1")
     return app
 

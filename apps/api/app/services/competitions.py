@@ -648,6 +648,154 @@ async def unregister(
     return await _to_out(db, competition, user=user)
 
 
+async def auto_transition_competitions(db: AsyncSession) -> int:
+    """Automatically transition scheduled/live competitions based on time.
+
+    Returns the number of competitions whose status changed.
+    Called by the background maintenance loop (Track 3).
+    """
+    now = datetime.now(UTC)
+    changed = 0
+
+    # scheduled → live when start_at has passed
+    scheduled = (
+        await db.scalars(
+            select(Competition).where(Competition.status == "scheduled")
+        )
+    ).all()
+    for competition in scheduled:
+        if competition.start_at and now >= competition.start_at.replace(tzinfo=UTC):
+            competition.status = "live"
+            changed += 1
+
+    # live → finished when end_at has passed
+    live = (
+        await db.scalars(
+            select(Competition).where(Competition.status == "live")
+        )
+    ).all()
+    for competition in live:
+        if competition.end_at and now >= competition.end_at.replace(tzinfo=UTC):
+            competition.status = "finished"
+            changed += 1
+            # Grant badges to all participants on finish
+            from app.services.badges import grant_eligible_badges
+
+            participant_ids = (
+                await db.scalars(
+                    select(CompetitionParticipant.user_id).where(
+                        CompetitionParticipant.competition_id == competition.id
+                    )
+                )
+            ).all()
+            for participant_id in participant_ids:
+                await grant_eligible_badges(db, participant_id)
+
+    if changed:
+        await db.commit()
+    return changed
+
+
+async def competition_analytics(
+    db: AsyncSession,
+    competition: Competition,
+) -> dict:
+    """Per-event analytics: participation, solve rates, score distribution (PRD §24)."""
+    challenge_rows = (
+        await db.execute(
+            select(CompetitionChallenge, Challenge)
+            .join(Challenge, Challenge.id == CompetitionChallenge.challenge_id)
+            .where(CompetitionChallenge.competition_id == competition.id)
+            .order_by(CompetitionChallenge.position.asc())
+        )
+    ).all()
+
+    participant_count = int(
+        await db.scalar(
+            select(func.count()).select_from(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == competition.id
+            )
+        )
+        or 0
+    )
+
+    participant_ids = set(
+        (
+            await db.scalars(
+                select(CompetitionParticipant.user_id).where(
+                    CompetitionParticipant.competition_id == competition.id
+                )
+            )
+        ).all()
+    )
+
+    start = competition.start_at
+    end = competition.end_at
+
+    # Per-challenge solve rates
+    per_challenge = []
+    for _cc, ch in challenge_rows:
+        user_cond = (
+            Submission.user_id.in_(participant_ids)
+            if participant_ids
+            else Submission.user_id.is_(None)
+        )
+        conditions = [
+            Submission.challenge_id == ch.id,
+            Submission.is_correct.is_(True),
+            user_cond,
+        ]
+        if start:
+            conditions.append(Submission.created_at >= start.replace(tzinfo=UTC))
+        if end:
+            conditions.append(Submission.created_at <= end.replace(tzinfo=UTC))
+
+        solves = int(await db.scalar(
+            select(func.count()).select_from(Submission).where(*conditions)
+        ) or 0)
+
+        # Time to first solve
+        first_solve = await db.scalar(
+            select(func.min(Submission.created_at)).where(*conditions)
+        )
+        ttfs = None
+        if first_solve and start:
+            ttfs = (first_solve.replace(tzinfo=UTC) - start.replace(tzinfo=UTC)).total_seconds()
+
+        per_challenge.append({
+            "challenge_id": str(ch.id),
+            "slug": ch.slug,
+            "title": ch.title,
+            "solves": solves,
+            "solve_rate": round(solves / participant_count, 4) if participant_count else 0.0,
+            "time_to_first_solve_seconds": ttfs,
+        })
+
+    # Score distribution (histogram bins)
+    entries = await leaderboard(db, competition, limit=9999)
+    points_list = [e.points for e in entries]
+    score_distribution = []
+    if points_list:
+        max_pts = max(points_list) if points_list else 0
+        bin_size = max(1, max_pts // 10)
+        bins: dict[int, int] = {}
+        for p in points_list:
+            bucket = (p // bin_size) * bin_size
+            bins[bucket] = bins.get(bucket, 0) + 1
+        score_distribution = [{"bucket": k, "count": v} for k, v in sorted(bins.items())]
+
+    return {
+        "competition_id": str(competition.id),
+        "slug": competition.slug,
+        "title": competition.title,
+        "status": competition.status,
+        "participant_count": participant_count,
+        "total_solves": sum(ch["solves"] for ch in per_challenge),
+        "per_challenge": per_challenge,
+        "score_distribution": score_distribution,
+    }
+
+
 # ---------------------------------------------------------------- internals
 
 def _slugify(title: str) -> str:

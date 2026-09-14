@@ -221,3 +221,14 @@ async def competition_results(
     """Exported rankings + per-entity solves for a competition (PRD §24)."""
     competition = await _get_competition(db, competition_id)
     return await competition_service.competition_results(db, competition)
+
+
+@router.get("/competitions/{competition_id}/analytics")
+async def competition_analytics(
+    competition_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("analytics.view"))],
+):
+    """Per-event analytics: participation, solve rates, score distribution."""
+    competition = await _get_competition(db, competition_id)
+    return await competition_service.competition_analytics(db, competition)

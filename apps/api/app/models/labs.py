@@ -38,6 +38,10 @@ class LabInstance(Base):
     flag_path: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(
+        String(16), default="docker", server_default=text("'docker'"), nullable=False
+    )
+    provider_ref: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )

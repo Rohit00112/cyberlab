@@ -44,6 +44,11 @@ export default async function ManageCompetitionPage({
             <CompetitionStatusBadge status={competition.status} />
           </div>
           <div className="flex items-center gap-2">
+            <Link href={`/admin/competitions/${competition.id}/analytics`}>
+              <Button variant="outline" size="sm">
+                Analytics
+              </Button>
+            </Link>
             <Link href={`/competitions/${competition.id}`}>
               <Button variant="outline" size="sm">
                 View public

@@ -117,3 +117,26 @@ async def admin_terminate_lab(
     """Force-stop and expire another user's lab."""
     lab = await _get_lab(db, lab_id)
     return await lab_service.admin_terminate_lab(db, lab, user, request=request)
+
+
+@router.get("/labs/{lab_id}/status")
+async def lab_status(
+    lab_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.launch"))],
+):
+    """Real-time provider status for a lab (container/VM state)."""
+    lab = await _get_lab(db, lab_id)
+    return await lab_service.lab_provider_status(db, user, lab)
+
+
+@router.get("/labs/{lab_id}/logs")
+async def lab_logs(
+    lab_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.launch"))],
+    tail: int = 100,
+):
+    """Recent log output from a lab environment."""
+    lab = await _get_lab(db, lab_id)
+    return await lab_service.lab_provider_logs(db, user, lab, tail=tail)

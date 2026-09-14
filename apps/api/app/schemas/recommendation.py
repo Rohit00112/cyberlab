@@ -19,4 +19,5 @@ class ChallengeRecommendationOut(BaseModel):
     points: int
     difficulty_score: float
     recommendation_score: float
+    source: str = Field(default="rule", description="Recommender backend that served this")
     skills: list[SkillBrief] = Field(default_factory=list)

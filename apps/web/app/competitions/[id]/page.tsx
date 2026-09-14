@@ -4,6 +4,7 @@ import { AppNav } from "@/components/app-nav";
 import { CompetitionLeaderboard } from "@/components/competitions/leaderboard";
 import { CompetitionRegisterCard } from "@/components/competitions/register-card";
 import { CompetitionStatusBadge } from "@/components/competitions/competition-status-badge";
+import { CompetitionCountdown } from "@/components/competitions/countdown";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -59,6 +60,13 @@ export default async function CompetitionDetailPage({
                 {competition.description}
               </p>
             ) : null}
+            <div className="mt-3">
+              <CompetitionCountdown
+                status={competition.status}
+                startAt={competition.start_at}
+                endAt={competition.end_at}
+              />
+            </div>
           </div>
           <dl className="text-sm">
             <div className="flex justify-between gap-6">

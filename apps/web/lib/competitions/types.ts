@@ -128,3 +128,32 @@ export const COMPETITION_ACTION_LABELS: Record<CompetitionAction, string> = {
   finish: "Finish",
   archive: "Archive",
 };
+
+export interface ChallengeSolveRate {
+  challenge_id: string;
+  challenge_title: string;
+  challenge_slug: string;
+  category: string;
+  points: number;
+  solves: number;
+  solve_rate: number;
+  time_to_first_solve_minutes?: number | null;
+}
+
+export interface ScoreBucket {
+  range_label: string;
+  min_score: number;
+  max_score: number;
+  count: number;
+}
+
+export interface CompetitionAnalytics {
+  competition_id: string;
+  title: string;
+  status: CompetitionStatus;
+  participant_count: number;
+  active_solvers: number;
+  total_solves: number;
+  per_challenge: ChallengeSolveRate[];
+  score_distribution: ScoreBucket[];
+}

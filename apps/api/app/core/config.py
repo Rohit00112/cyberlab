@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     research_data_dir: str = "data/research"
     research_dataset_expiry_days: int = 30
 
+    # Live recommendations (Phase 7, PRD §72): rule | graph | gnn
+    recommendation_backend: str = "rule"
+    gnn_model_path: str = "data/research/model/gnn.onnx"
+
+    # Lab provider abstraction (Track 4): docker | proxmox | fake
+    lab_provider: str = "docker"
+
+    # Proxmox VE connection (Track 4, only used when lab_provider=proxmox)
+    proxmox_api_url: str = "https://localhost:8006"
+    proxmox_api_token_id: str = ""
+    proxmox_api_token_secret: str = ""
+    proxmox_node: str = "pve"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -17,7 +17,9 @@ from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, hash_flag
 from app.infrastructure import docker as docker_adapter
+from app.infrastructure.base import LabProviderError
 from app.infrastructure.docker import DockerError
+from app.infrastructure.factory import get_lab_provider
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
 from app.models.users import User
@@ -67,10 +69,14 @@ async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:
     flag_path = lab_cfg["flag_path"]
     flag = generate_lab_flag()
     name = lab.container_name or _container_name(lab)
-    container_id, ip = await docker_adapter.create_and_start_container(
+    provider = get_lab_provider()
+    provider_ref, ip = await provider.create_lab(
         name, lab_cfg["image"], lab.network_name, cmd=_flag_command(flag_path, flag)
     )
-    lab.container_id = container_id
+    settings = get_settings()
+    lab.provider = settings.lab_provider
+    lab.provider_ref = provider_ref
+    lab.container_id = provider_ref
     lab.container_name = name
     lab.flag_hash = hash_flag(flag)
     lab.flag_path = flag_path
@@ -151,13 +157,14 @@ async def launch_lab(
     await db.refresh(lab)
 
     try:
-        await docker_adapter.ensure_network(lab.network_name)
+        provider = get_lab_provider()
+        await provider.ensure_network(lab.network_name)
         await _start_container(lab, lab_cfg)
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
-    except DockerError as exc:
+    except (DockerError, LabProviderError) as exc:
         lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
@@ -197,10 +204,11 @@ async def stop_lab(
 ) -> LabOut:
     if not _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    if lab.status == "running" and lab.container_id:
+    ref = lab.provider_ref or lab.container_id
+    if lab.status == "running" and ref:
         try:
-            await docker_adapter.stop_container(lab.container_id)
-        except DockerError as exc:
+            await get_lab_provider().stop_lab(ref)
+        except (DockerError, LabProviderError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
             ) from None
@@ -224,21 +232,23 @@ async def reset_lab(
 
     challenge = await db.get(Challenge, lab.challenge_id)
     lab_cfg = _lab_settings(challenge)
-    if lab.container_id:
+    provider = get_lab_provider()
+    ref = lab.provider_ref or lab.container_id
+    if ref:
         try:
-            await docker_adapter.remove_container(lab.container_id)
-        except DockerError:
+            await provider.remove_lab(ref)
+        except (DockerError, LabProviderError):
             pass
 
     try:
-        await docker_adapter.ensure_network(lab.network_name)
+        await provider.ensure_network(lab.network_name)
         await _start_container(lab, lab_cfg)
         lab.status = "running"
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
         lab.error_message = None
-    except DockerError as exc:
+    except (DockerError, LabProviderError) as exc:
         lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
@@ -272,10 +282,11 @@ async def expire_lab(
 ) -> LabOut:
     if not _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    if lab.status == "running" and lab.container_id:
+    ref = lab.provider_ref or lab.container_id
+    if lab.status == "running" and ref:
         try:
-            await docker_adapter.stop_container(lab.container_id)
-        except DockerError:
+            await get_lab_provider().stop_lab(ref)
+        except (DockerError, LabProviderError):
             pass
     lab.status = "expired"
     await db.commit()
@@ -296,6 +307,7 @@ async def expire_stale_labs(db: AsyncSession) -> int:
     changed = 0
     now = datetime.now(UTC)
     settings = get_settings()
+    provider = get_lab_provider()
     rows = (await db.scalars(select(LabInstance))).all()
     for lab in rows:
         if (
@@ -303,10 +315,11 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             and lab.expires_at
             and now > lab.expires_at.replace(tzinfo=UTC)
         ):
-            if lab.container_id:
+            ref = lab.provider_ref or lab.container_id
+            if ref:
                 try:
-                    await docker_adapter.stop_container(lab.container_id)
-                except DockerError:
+                    await provider.stop_lab(ref)
+                except (DockerError, LabProviderError):
                     pass
             lab.status = "expired"
             changed += 1
@@ -413,11 +426,13 @@ async def admin_terminate_lab(
     admin_user: User,
     request: Request | None = None,
 ) -> LabAdminOut:
-    if lab.container_id:
+    ref = lab.provider_ref or lab.container_id
+    if ref:
+        provider = get_lab_provider()
         try:
-            await docker_adapter.stop_container(lab.container_id)
-            await docker_adapter.remove_container(lab.container_id)
-        except DockerError:
+            await provider.stop_lab(ref)
+            await provider.remove_lab(ref)
+        except (DockerError, LabProviderError):
             pass
     lab.status = "expired"
     await db.commit()
@@ -465,3 +480,41 @@ async def _users_map(
     return {
         str(row[0]): {"display_name": row[1], "email": row[2]} for row in rows
     }
+
+
+async def lab_provider_status(
+    db: AsyncSession,
+    user: CurrentUser,
+    lab: LabInstance,
+) -> dict:
+    """Return real-time status from the lab's infrastructure provider."""
+    if not _can_manage_lab(user, lab):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    ref = lab.provider_ref or lab.container_id
+    if not ref:
+        return {"status": lab.status, "provider": lab.provider, "detail": "no provider ref"}
+
+    provider = get_lab_provider()
+    result = await provider.lab_status(ref)
+    result["lab_id"] = str(lab.id)
+    result["provider"] = lab.provider
+    return result
+
+
+async def lab_provider_logs(
+    db: AsyncSession,
+    user: CurrentUser,
+    lab: LabInstance,
+    *,
+    tail: int = 100,
+) -> dict:
+    """Return recent logs from the lab's infrastructure provider."""
+    if not _can_manage_lab(user, lab):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    ref = lab.provider_ref or lab.container_id
+    if not ref:
+        return {"logs": "", "detail": "no provider ref"}
+
+    provider = get_lab_provider()
+    logs = await provider.lab_logs(ref, tail=tail)
+    return {"lab_id": str(lab.id), "provider": lab.provider, "logs": logs}

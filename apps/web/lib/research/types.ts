@@ -23,6 +23,15 @@ export interface ResearchDataset {
   created_at: string;
 }
 
+export interface SourceRecommendationMetrics {
+  source: string;
+  served: number;
+  accepted: number;
+  solved: number;
+  acceptance_rate: number;
+  completion_rate: number;
+}
+
 export interface ResearchMetrics {
   learning: {
     assessed_users: number;
@@ -51,6 +60,7 @@ export interface ResearchMetrics {
     solved: number;
     acceptance_rate: number;
     completion_rate: number;
+    per_source?: SourceRecommendationMetrics[];
   };
   generated_at: string;
 }

@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import { NotificationBell } from "@/components/notification-bell";
 import { hasPermission } from "@/lib/auth/client";
 
 export function AppNav() {
@@ -82,6 +83,7 @@ export function AppNav() {
               Research
             </Link>
           ) : null}
+          <NotificationBell />
           <Link href="/profile" className="hover:underline">
             Profile
           </Link>

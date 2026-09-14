@@ -13,6 +13,7 @@ from app.services import recommendations as rec_service
 
 router = APIRouter(tags=["recommendations"])
 
+
 @router.get("/recommendations/challenges", response_model=list[ChallengeRecommendationOut])
 async def get_challenge_recommendations(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -20,3 +21,11 @@ async def get_challenge_recommendations(
     limit: int = 10,
 ):
     return await rec_service.get_recommendations(db, user.id, limit)
+
+
+@router.get("/recommendations/status")
+async def recommendation_status(
+    user: Annotated[CurrentUser, Depends(require_permission("analytics.view"))],
+):
+    """Current recommendation backend config and health (admin/researcher)."""
+    return await rec_service.recommendation_status()
