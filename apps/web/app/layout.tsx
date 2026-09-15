@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "@/app/globals.css";
 
 import { AuthProvider } from "@/components/providers/auth-provider";
+import { ThemeProvider } from "@/components/providers/theme-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,10 +24,20 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
+      suppressHydrationWarning
     >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("cyberlab-theme");if(t!=="light"&&t!=="dark"){t=(window.matchMedia&&window.matchMedia("(prefers-color-scheme:light)").matches)?"light":"dark";}var h=document.documentElement;h.classList.toggle("dark",t==="dark");h.style.colorScheme=t}catch(e){}})()`,
+          }}
+        />
+      </head>
       <body className="min-h-full flex flex-col">
-        <AuthProvider>{children}</AuthProvider>
+        <ThemeProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

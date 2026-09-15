@@ -32,6 +32,7 @@ async def lab_maintenance_loop(stop_event: asyncio.Event) -> None:
                 changed = await expire_stale_labs(db)
             except Exception:
                 logger.exception("lab maintenance sweep failed")
+                await db.rollback()
                 changed = 0
             if changed:
                 logger.info("lab maintenance sweep changed %s labs", changed)
@@ -40,6 +41,7 @@ async def lab_maintenance_loop(stop_event: asyncio.Event) -> None:
                 comp_changed = await auto_transition_competitions(db)
             except Exception:
                 logger.exception("competition auto-transition failed")
+                await db.rollback()
                 comp_changed = 0
             if comp_changed:
                 logger.info("auto-transitioned %s competitions", comp_changed)
