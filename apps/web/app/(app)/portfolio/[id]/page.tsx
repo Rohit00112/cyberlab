@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { Badge } from "@/components/ui/badge";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { serverApiGet } from "@/lib/api-server";
@@ -60,8 +60,7 @@ export default async function StudentPortfolioPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-5xl flex-1 p-6">
+            <div className="contents">
         {/* Verification Credential Banner */}
         <div className="rounded-xl border border-primary/30 bg-gradient-to-br from-primary/10 via-card to-background p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -181,8 +180,8 @@ export default async function StudentPortfolioPage({
                   key={b.id}
                   className="flex items-start gap-3 rounded-lg border bg-card p-3.5 shadow-xs"
                 >
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-2xl">
-                    {b.icon ?? "🏅"}
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <BadgeIcon badge={b} className="size-5.5" />
                   </div>
                   <div className="overflow-hidden">
                     <p className="font-medium text-sm truncate">{b.name}</p>
@@ -245,7 +244,7 @@ export default async function StudentPortfolioPage({
             · Learn. Practice. Compete. Defend.
           </p>
         </div>
-      </main>
+      </div>
     </>
   );
 }

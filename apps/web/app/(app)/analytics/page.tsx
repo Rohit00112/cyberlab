@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import {
   Table,
   TableBody,
@@ -74,8 +73,7 @@ export default async function AnalyticsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <h1 className="text-2xl font-semibold">Faculty Analytics</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Platform-wide submission review and performance breakdown.
@@ -278,7 +276,7 @@ export default async function AnalyticsPage() {
             </div>
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

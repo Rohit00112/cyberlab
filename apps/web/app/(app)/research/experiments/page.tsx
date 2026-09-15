@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { ExperimentActions } from "@/components/research/experiment-actions";
 import { ExperimentForm } from "@/components/research/experiment-form";
 import { Badge } from "@/components/ui/badge";
@@ -35,8 +34,7 @@ export default async function ResearchExperimentsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">ML experiment registry</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -96,7 +94,7 @@ export default async function ResearchExperimentsPage() {
             )}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

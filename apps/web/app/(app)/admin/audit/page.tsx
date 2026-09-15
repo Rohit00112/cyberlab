@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { AuditFilter } from "@/components/admin/audit-filter";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -34,8 +33,7 @@ export default async function AdminAuditPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold">Audit log</h1>
@@ -94,7 +92,7 @@ export default async function AdminAuditPage({
           </Link>{" "}
           (raw rows include details).
         </p>
-      </main>
+      </div>
     </>
   );
 }

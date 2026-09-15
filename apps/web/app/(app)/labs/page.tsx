@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { RequireAuth } from "@/components/providers/require-auth";
 import { useAuth } from "@/components/providers/auth-provider";
 import { Badge } from "@/components/ui/badge";
@@ -43,8 +42,7 @@ export default function LabsPage() {
 
   return (
     <RequireAuth>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <h1 className="text-2xl font-semibold">My labs</h1>
         <p className="mt-2 text-muted-foreground">
           Isolated single-user environments provisioned per challenge. Expire 60 minutes after
@@ -139,7 +137,7 @@ export default function LabsPage() {
         <p className="mt-6 text-xs text-muted-foreground">
           Signed in as {user?.display_name ?? "student"}.
         </p>
-      </main>
+      </div>
     </RequireAuth>
   );
 }

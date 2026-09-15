@@ -133,7 +133,7 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
           </Card>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 lg:sticky lg:top-20 lg:self-start">
           <Card>
             <CardHeader>
               <CardTitle>Submit flag</CardTitle>
@@ -157,7 +157,7 @@ export function ChallengeDetail({ challenge }: { challenge: Challenge }) {
                 {result ? (
                   <p
                     className={`text-sm ${
-                      result.correct ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+                      result.correct ? "text-success" : "text-destructive"
                     }`}
                     aria-live="polite"
                   >

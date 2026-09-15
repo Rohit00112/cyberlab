@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { UserToggle } from "@/components/admin/user-toggle";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -33,8 +32,7 @@ export default async function AdminUsersPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">User management</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -97,7 +95,7 @@ export default async function AdminUsersPage({
             </Table>
           )}
         </div>
-      </main>
+      </div>
     </>
   );
 }

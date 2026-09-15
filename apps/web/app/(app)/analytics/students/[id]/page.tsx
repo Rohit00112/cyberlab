@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { Badge } from "@/components/ui/badge";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Progress, ProgressLabel } from "@/components/ui/progress";
 import {
   Table,
@@ -58,8 +58,7 @@ export default async function StudentAnalyticsPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <Link href="/analytics" className="text-sm text-muted-foreground hover:text-foreground">
           ← Analytics
         </Link>
@@ -104,7 +103,7 @@ export default async function StudentAnalyticsPage({
               ) : (
                 student.badges.map((badge) => (
                   <Badge key={badge.code} variant="secondary" className="gap-1.5 px-3 py-1.5">
-                    <span aria-hidden>{badge.icon ?? "🏅"}</span>
+                    <BadgeIcon badge={badge} className="size-3.5" />
                     {badge.name}
                   </Badge>
                 ))
@@ -166,7 +165,7 @@ export default async function StudentAnalyticsPage({
             )}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

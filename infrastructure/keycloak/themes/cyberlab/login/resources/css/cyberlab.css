@@ -1,0 +1,485 @@
+/* ============================================================
+   IIC CyberLab — Keycloak login theme
+   Mirrors the CyberLab web design system: dark navy + cyan,
+   Space Grotesk display type, glassmorphic card, cyber grid.
+   ============================================================ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../fonts/space-grotesk-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../fonts/space-grotesk-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/geist-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ---- Cyberlab palette ---- */
+:root {
+  --cl-bg: #0a0e17;
+  --cl-surface: #0f1622;
+  --cl-surface-2: #131b2a;
+  --cl-border: rgba(160, 180, 210, 0.16);
+  --cl-border-strong: rgba(160, 180, 210, 0.28);
+  --cl-primary: #53c3e9;
+  --cl-primary-bright: #8bd9f2;
+  --cl-primary-deep: #1f96c4;
+  --cl-text: #e8f0f8;
+  --cl-muted: #94a5bf;
+  --cl-faint: #6b7c96;
+  --cl-danger: #f87171;
+  --cl-danger-bg: rgba(248, 113, 113, 0.1);
+  --cl-warning: #fbbf24;
+  --cl-warning-bg: rgba(251, 191, 36, 0.1);
+  --cl-success: #34d399;
+  --cl-success-bg: rgba(52, 211, 153, 0.1);
+  --cl-info: #53c3e9;
+  --cl-info-bg: rgba(83, 195, 233, 0.1);
+  --cl-glow: rgba(83, 195, 233, 0.35);
+  --cl-glow-soft: rgba(83, 195, 233, 0.14);
+  --cl-font: "Space Grotesk", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --cl-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* PF v5 dark overrides */
+  --pf-v5-global--FontFamily--sans-serif: var(--cl-font);
+  --pf-v5-global--FontFamily--heading--sans-serif: var(--cl-font);
+  --pf-v5-global--FontFamily--monospace: var(--cl-mono);
+  --pf-v5-global--primary-color--100: var(--cl-primary);
+  --pf-v5-global--primary-color--200: var(--cl-primary-bright);
+  --pf-v5-global--link--Color: var(--cl-primary-bright);
+  --pf-v5-global--link--Color--hover: var(--cl-primary);
+  --pf-v5-global--Color--100: var(--cl-text);
+  --pf-v5-global--Color--200: var(--cl-muted);
+  --pf-v5-global--Color--300: var(--cl-faint);
+  --pf-v5-global--BorderRadius--small: 0.5rem;
+  --pf-v5-global--BorderRadius--medium: 0.625rem;
+}
+
+/* ---- Background: cyber grid + glow field ---- */
+body {
+  background-color: var(--cl-bg) !important;
+  background-image:
+    radial-gradient(55rem 32rem at 85% -10%, rgba(83, 195, 233, 0.16), transparent 62%),
+    radial-gradient(48rem 38rem at 8% 112%, rgba(139, 92, 246, 0.13), transparent 60%),
+    linear-gradient(rgba(150, 170, 205, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(150, 170, 205, 0.06) 1px, transparent 1px) !important;
+  background-size: auto, auto, 42px 42px, 42px 42px !important;
+  background-attachment: fixed;
+  color: var(--cl-text);
+  font-family: var(--cl-font);
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: var(--cl-glow-soft);
+  color: var(--cl-text);
+}
+
+/* ---- Layout ---- */
+.pf-v5-c-login {
+  min-height: 100vh;
+  align-items: center;
+  padding: 2.5rem 1rem;
+}
+
+.pf-v5-c-login__container {
+  grid-template-columns: minmax(20rem, 30rem);
+  gap: 1.5rem;
+}
+
+/* ---- Brand header ---- */
+.cyberlab-header {
+  padding: 0;
+  grid-column: 1;
+}
+
+.cyberlab-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.cyberlab-brand__mark {
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, #53c3e9 0%, #3b82f6 55%, #8b5cf6 130%);
+  color: #06121a;
+  box-shadow: 0 0 22px -6px var(--cl-glow);
+  transition: transform 0.25s ease;
+}
+
+.cyberlab-brand__mark svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  stroke-width: 2.1;
+}
+
+.cyberlab-brand__word {
+  font-family: var(--cl-font);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cl-text);
+}
+
+.cyberlab-brand__word em {
+  font-style: normal;
+  background: linear-gradient(90deg, #7fd3f0 0%, #53c3e9 45%, #9f7aea 120%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.cyberlab-brand__sub {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  font-family: var(--cl-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cl-faint);
+}
+
+/* ---- Auth card ---- */
+.pf-v5-c-login__main {
+  background: linear-gradient(180deg, rgba(19, 27, 42, 0.92), rgba(13, 19, 30, 0.96)) !important;
+  border: 1px solid var(--cl-border);
+  border-radius: 1.25rem;
+  box-shadow:
+    0 24px 70px -24px rgba(0, 0, 0, 0.75),
+    0 0 0 1px rgba(83, 195, 233, 0.04),
+    0 0 55px -32px var(--cl-glow);
+  overflow: hidden;
+  position: relative;
+  animation: cl-card-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.pf-v5-c-login__main::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cl-glow-soft), transparent);
+}
+
+.pf-v5-c-login__main::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 3rem;
+  right: 3rem;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cl-primary), transparent);
+  filter: blur(0.25px);
+  opacity: 0.55;
+}
+
+@keyframes cl-card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.pf-v5-c-login__main-header {
+  padding: 1.75rem 1.75rem 0.25rem;
+}
+
+#kc-page-title.pf-v5-c-title {
+  font-family: var(--cl-font);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cl-text);
+}
+
+.pf-v5-c-login__main-body {
+  padding: 1rem 1.75rem 1.75rem;
+}
+
+/* ---- Locale select ---- */
+.pf-v5-c-login__main-header-utilities .pf-v5-c-form-control {
+  background: var(--cl-surface) !important;
+  border: 1px solid var(--cl-border);
+  border-radius: 0.625rem;
+  color: var(--cl-muted);
+  font-size: 0.8125rem;
+  padding-right: 2rem;
+  cursor: pointer;
+}
+
+/* ---- Form label ---- */
+.pf-v5-c-form__label {
+  color: var(--cl-muted) !important;
+  font-family: var(--cl-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+
+.pf-v5-c-form__label-required {
+  color: var(--cl-primary);
+}
+
+/* ---- Inputs ---- */
+.pf-v5-c-form-control {
+  background: rgba(8, 12, 21, 0.6) !important;
+  border: 1px solid var(--cl-border) !important;
+  border-radius: 0.65rem !important;
+  color: var(--cl-text) !important;
+  font-family: var(--cl-font);
+  font-size: 0.925rem;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.pf-v5-c-form-control:hover {
+  border-color: var(--cl-border-strong) !important;
+}
+
+.pf-v5-c-form-control:focus-within {
+  border-color: var(--cl-primary) !important;
+  box-shadow: 0 0 0 3px var(--cl-glow-soft) !important;
+}
+
+.pf-v5-c-form-control input {
+  color: var(--cl-text);
+  caret-color: var(--cl-primary);
+  font-family: var(--cl-font);
+}
+
+.pf-v5-c-form-control input::placeholder {
+  color: var(--cl-faint);
+}
+
+.pf-v5-c-form-control input:-webkit-autofill,
+.pf-v5-c-form-control input:-webkit-autofill:hover,
+.pf-v5-c-form-control input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--cl-text);
+  -webkit-box-shadow: 0 0 0 1000px #0d1421 inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Error state */
+.pf-v5-c-form-control.pf-m-error {
+  border-color: var(--cl-danger) !important;
+}
+
+.pf-v5-c-form__helper-text,
+.pf-v5-c-helper-text,
+.pf-v5-c-form__helper-text .pf-v5-c-helper-text__item-text.pf-m-error {
+  color: var(--cl-danger) !important;
+  font-family: var(--cl-mono);
+  font-size: 0.75rem;
+}
+
+.pf-v5-c-form__helper-text a {
+  color: var(--cl-primary-bright);
+  text-decoration: none;
+  font-family: var(--cl-font);
+  font-size: 0.8125rem;
+}
+
+.pf-v5-c-form__helper-text a:hover {
+  text-decoration: underline;
+}
+
+/* ---- Password visibility toggle ---- */
+.pf-v5-c-button.pf-m-control {
+  background: var(--cl-surface-2) !important;
+  border: 1px solid var(--cl-border) !important;
+  color: var(--cl-muted);
+  border-radius: 0.65rem;
+}
+
+.pf-v5-c-button.pf-m-control:hover {
+  background: var(--cl-surface-2) !important;
+  border-color: var(--cl-border-strong) !important;
+  color: var(--cl-text);
+}
+
+/* ---- Checkbox / remember me ---- */
+.pf-v5-c-check__input {
+  accent-color: var(--cl-primary);
+  width: 1rem;
+  height: 1rem;
+}
+
+.pf-v5-c-check__label {
+  color: var(--cl-muted);
+  font-family: var(--cl-font);
+  font-size: 0.875rem;
+}
+
+/* ---- Buttons ---- */
+.pf-v5-c-button {
+  border-radius: 0.65rem;
+  font-family: var(--cl-font);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pf-v5-c-button.pf-m-primary {
+  background: linear-gradient(180deg, #5fc9ee 0%, #2aa8d6 100%) !important;
+  border: none !important;
+  color: #06212c !important;
+  box-shadow: 0 10px 28px -12px var(--cl-glow);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+}
+
+.pf-v5-c-button.pf-m-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 14px 34px -12px var(--cl-glow);
+}
+
+.pf-v5-c-button.pf-m-primary:active {
+  transform: translateY(0);
+  filter: brightness(0.97);
+}
+
+.pf-v5-c-button.pf-m-secondary,
+.pf-v5-c-button.pf-m-link {
+  background: transparent !important;
+  border: 1px solid var(--cl-border) !important;
+  color: var(--cl-muted) !important;
+}
+
+.pf-v5-c-button.pf-m-link {
+  border: none !important;
+  color: var(--cl-primary-bright) !important;
+  text-decoration-thickness: 1px;
+}
+
+.pf-v5-c-button.pf-m-secondary:hover,
+.pf-v5-c-button.pf-m-link:hover {
+  color: var(--cl-text) !important;
+  border-color: var(--cl-border-strong) !important;
+  text-decoration: underline;
+}
+
+/* ---- Alerts ---- */
+.pf-v5-c-alert {
+  border-radius: 0.7rem;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.pf-v5-c-alert.pf-m-danger {
+  background: var(--cl-danger-bg);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.pf-v5-c-alert.pf-m-warning {
+  background: var(--cl-warning-bg);
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.pf-v5-c-alert.pf-m-success {
+  background: var(--cl-success-bg);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.pf-v5-c-alert.pf-m-info {
+  background: var(--cl-info-bg);
+  border-color: rgba(83, 195, 233, 0.35);
+}
+
+.pf-v5-c-alert__title {
+  color: var(--cl-text) !important;
+  font-family: var(--cl-font);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* ---- Social providers ---- */
+.pf-v5-c-login__main-footer {
+  border-top: 1px solid rgba(160, 180, 210, 0.1);
+}
+
+.pf-v5-c-login__main-footer-links-item-link {
+  color: var(--cl-muted);
+  border: 1px solid var(--cl-border);
+  border-radius: 0.65rem;
+  background: rgba(8, 12, 21, 0.5);
+}
+
+.pf-v5-c-login__main-footer-links-item-link:hover {
+  color: var(--cl-text);
+  border-color: var(--cl-border-strong);
+}
+
+/* ---- Select authenticator / OTP tiles ---- */
+.pf-v5-c-tile {
+  background: var(--cl-surface) !important;
+  border: 1px solid var(--cl-border) !important;
+  border-radius: 0.75rem;
+  color: var(--cl-text);
+}
+
+.pf-v5-c-tile.pf-m-selected {
+  border-color: var(--cl-primary) !important;
+  box-shadow: 0 0 0 3px var(--cl-glow-soft);
+}
+
+.select-auth-box-headline {
+  color: var(--cl-text);
+}
+
+.select-auth-box-desc {
+  color: var(--cl-muted);
+}
+
+/* ---- Branded footer ---- */
+.cyberlab-footer {
+  grid-column: 1;
+  padding: 0.5rem 0 0.25rem;
+  text-align: center;
+  font-family: var(--cl-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--cl-faint);
+}
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .pf-v5-c-login__main {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+}
+
+/* ---- Small screens ---- */
+@media (max-width: 480px) {
+  .pf-v5-c-login__container {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pf-v5-c-login__main-header,
+  .pf-v5-c-login__main-body {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+}

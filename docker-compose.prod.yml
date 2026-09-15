@@ -32,6 +32,7 @@ services:
       KC_HOSTNAME_STRICT: "false"
     volumes:
       - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./infrastructure/keycloak/themes/cyberlab:/opt/keycloak/themes/cyberlab:ro
     ports: !override []
 
   api:

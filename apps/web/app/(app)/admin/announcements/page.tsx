@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { AnnouncementForm } from "@/components/admin/announcement-form";
 import { Button } from "@/components/ui/button";
 import { canServerUser, serverApiGet, serverSessionUser } from "@/lib/api-server";
@@ -19,8 +18,7 @@ export default async function AdminAnnouncementsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 p-6">
+            <div className="contents">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold">Broadcast Announcements</h1>
@@ -69,7 +67,7 @@ export default async function AdminAnnouncementsPage() {
             )}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { CompetitionStatusBadge } from "@/components/competitions/competition-status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,8 +27,7 @@ export default async function AdminCompetitionsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold">Competition management</h1>
@@ -90,7 +88,7 @@ export default async function AdminCompetitionsPage() {
             </Table>
           )}
         </div>
-      </main>
+      </div>
     </>
   );
 }

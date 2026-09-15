@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { Card, CardContent } from "@/components/ui/card";
 import { canServerUser, serverApiGet, serverSessionUser } from "@/lib/api-server";
 import type { ResearchMetrics } from "@/lib/research/types";
@@ -41,8 +40,7 @@ export default async function ResearchHubPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">Research platform</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -103,7 +101,7 @@ export default async function ResearchHubPage() {
             ))}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

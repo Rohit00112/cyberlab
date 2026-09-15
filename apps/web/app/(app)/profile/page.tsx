@@ -3,21 +3,34 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { RequireAuth } from "@/components/providers/require-auth";
+import { AnimatedNumber } from "@/components/motion/animated-number";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import type { UserProfile } from "@/lib/challenges/types";
 import type { BadgeEarned } from "@/lib/badges/types";
+import { ActivityIcon, AwardIcon, TargetIcon } from "lucide-react";
 
-function StatCard({ label, value }: { label: string; value: number }) {
+const STAT_ICONS = [TargetIcon, AwardIcon, ActivityIcon];
+
+function StatCard({ label, value, index }: { label: string; value: number; index: number }) {
+  const Icon = STAT_ICONS[index % STAT_ICONS.length];
   return (
-    <Card>
-      <CardContent className="pt-6">
-        <p className="text-sm text-muted-foreground">{label}</p>
-        <p className="mt-1 text-3xl font-semibold tabular-nums">{value}</p>
+    <Card className="group relative overflow-hidden">
+      <div aria-hidden className="absolute -top-8 -right-8 size-24 rounded-full bg-primary/5 transition-transform duration-300 group-hover:scale-150" />
+      <CardContent className="relative pt-6">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">{label}</p>
+          <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary [&_svg]:size-4">
+            <Icon />
+          </span>
+        </div>
+        <p className="mt-2 text-3xl font-bold tabular-nums">
+          <AnimatedNumber value={value} />
+        </p>
       </CardContent>
     </Card>
   );
@@ -50,37 +63,44 @@ export default function ProfilePage() {
 
   return (
     <RequireAuth>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
-        <div className="rounded-lg border bg-card p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-semibold">
-                {profile?.display_name ?? "Profile"}
-              </h1>
-              <p className="mt-1 text-muted-foreground">{profile?.email}</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {profile?.roles.map((role) => (
-                  <Badge key={role} variant="secondary">
-                    {role}
-                  </Badge>
-                ))}
+            <div className="contents">
+        <div className="relative overflow-hidden rounded-xl border border-border/80 bg-card p-6">
+          <div aria-hidden className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-primary/10 to-transparent" />
+          <div className="relative flex flex-wrap items-start justify-between gap-4">
+            <div className="flex items-start gap-4">
+              <span className="grid size-14 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-cyber-2 text-primary-foreground font-display text-lg font-bold shadow-lg shadow-primary/20">
+                {(profile?.display_name ?? "U")
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((p) => p[0]?.toUpperCase())
+                  .join("") || "U"}
+              </span>
+              <div>
+                <h1 className="font-display text-2xl font-bold">
+                  {profile?.display_name ?? "Profile"}
+                </h1>
+                <p className="mt-0.5 text-muted-foreground">{profile?.email}</p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {profile?.roles.map((role) => (
+                    <Badge key={role} variant="secondary">
+                      {role}
+                    </Badge>
+                  ))}
+                </div>
+                {profile?.created_at ? (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Member since {new Date(profile.created_at).toLocaleDateString()}
+                  </p>
+                ) : null}
               </div>
-              {profile?.created_at ? (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Member since{" "}
-                  {new Date(profile.created_at).toLocaleDateString()}
-                </p>
-              ) : null}
             </div>
 
             {profile ? (
               <div className="flex flex-wrap items-center gap-2">
-                <Link href={`/portfolio/${profile.id}`}>
-                  <Button variant="outline" size="sm">
-                    View Public Portfolio
-                  </Button>
-                </Link>
+                <Button variant="outline" size="sm" render={<Link href={`/portfolio/${profile.id}`} />}>
+                  View Public Portfolio
+                </Button>
                 <Button size="sm" onClick={copyPortfolioLink}>
                   {copied ? "Link Copied!" : "Share Portfolio"}
                 </Button>
@@ -90,9 +110,9 @@ export default function ProfilePage() {
         </div>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
-          <StatCard label="Points" value={profile?.points ?? 0} />
-          <StatCard label="Solved" value={profile?.solved_count ?? 0} />
-          <StatCard label="Attempts" value={profile?.attempts ?? 0} />
+          <StatCard label="Points" value={profile?.points ?? 0} index={0} />
+          <StatCard label="Solved" value={profile?.solved_count ?? 0} index={1} />
+          <StatCard label="Attempts" value={profile?.attempts ?? 0} index={2} />
         </div>
 
         {/* Badges Showcase */}
@@ -116,8 +136,8 @@ export default function ProfilePage() {
                   key={b.id}
                   className="flex items-center gap-3 rounded-lg border bg-card/60 p-3 shadow-xs"
                 >
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-2xl">
-                    {b.icon ?? "🏅"}
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <BadgeIcon badge={b} className="size-5.5" />
                   </div>
                   <div className="overflow-hidden">
                     <p className="font-medium text-sm truncate">{b.name}</p>
@@ -177,7 +197,7 @@ export default function ProfilePage() {
             </ul>
           )}
         </div>
-      </main>
+      </div>
     </RequireAuth>
   );
 }

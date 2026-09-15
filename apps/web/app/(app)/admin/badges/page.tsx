@@ -3,9 +3,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { RequireAuth } from "@/components/providers/require-auth";
 import { Badge as UiBadge } from "@/components/ui/badge";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -115,8 +115,7 @@ export default function AdminBadgesPage() {
 
   return (
     <RequireAuth>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold">Badge Management</h1>
@@ -261,7 +260,9 @@ export default function AdminBadgesPage() {
                 <TableBody>
                   {badges.map((b) => (
                     <TableRow key={b.id}>
-                      <TableCell className="text-xl text-center">{b.icon ?? "🏅"}</TableCell>
+                      <TableCell className="text-center">
+                        <BadgeIcon badge={b} className="mx-auto size-5 text-primary" />
+                      </TableCell>
                       <TableCell>
                         <p className="font-semibold text-sm">{b.name}</p>
                         <p className="font-mono text-xs text-muted-foreground">{b.code}</p>
@@ -301,7 +302,7 @@ export default function AdminBadgesPage() {
             </div>
           )}
         </div>
-      </main>
+      </div>
     </RequireAuth>
   );
 }

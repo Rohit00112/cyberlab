@@ -1,5 +1,7 @@
 {
   "realm": "cyberlab",
+  "loginTheme": "cyberlab",
+  "accountTheme": "keycloak.v2",
   "enabled": true,
   "registrationAllowed": true,
   "registrationEmailAsUsername": true,

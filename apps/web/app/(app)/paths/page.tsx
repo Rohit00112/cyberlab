@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canServerUser, serverApiGet, serverSessionUser } from "@/lib/api-server";
@@ -20,8 +19,7 @@ export default async function PathsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">Learning paths</h1>
           <p className="mt-1 text-muted-foreground">
@@ -54,7 +52,7 @@ export default async function PathsPage() {
             ))
           )}
         </div>
-      </main>
+      </div>
     </>
   );
 }

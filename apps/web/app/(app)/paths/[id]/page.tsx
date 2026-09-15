@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress, ProgressLabel } from "@/components/ui/progress";
@@ -35,8 +34,7 @@ export default async function PathDetailPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-3xl flex-1 p-6">
+            <div className="contents">
         <Link href="/paths" className="text-sm text-muted-foreground hover:text-foreground">
           ← All paths
         </Link>
@@ -87,7 +85,7 @@ export default async function PathDetailPage({
             ))
           )}
         </ol>
-      </main>
+      </div>
     </>
   );
 }

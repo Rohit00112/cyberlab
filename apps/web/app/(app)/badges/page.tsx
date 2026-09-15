@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { Badge as UiBadge } from "@/components/ui/badge";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -68,8 +68,7 @@ export default function BadgesCataloguePage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold">Achievements & Badges</h1>
@@ -187,7 +186,7 @@ export default function BadgesCataloguePage() {
                               : "bg-muted text-muted-foreground grayscale"
                           }`}
                         >
-                          {badge.icon ?? "🏅"}
+                          <BadgeIcon badge={badge} className="size-6" />
                         </div>
                         <div>
                           <CardTitle className="text-base font-semibold leading-tight">
@@ -234,7 +233,7 @@ export default function BadgesCataloguePage() {
             })}
           </div>
         )}
-      </main>
+      </div>
     </>
   );
 }

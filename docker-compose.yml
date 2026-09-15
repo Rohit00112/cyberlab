@@ -50,6 +50,7 @@ services:
         condition: service_healthy
     volumes:
       - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./infrastructure/keycloak/themes/cyberlab:/opt/keycloak/themes/cyberlab:ro
     healthcheck:
       test:
         [

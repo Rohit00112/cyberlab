@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { ChallengeDetail } from "@/components/challenges/challenge-detail";
 import { serverApiGet } from "@/lib/api-server";
 import type { Challenge } from "@/lib/challenges/types";
@@ -22,15 +21,14 @@ export default async function ChallengeDetailPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <Link href="/challenges" className="text-sm text-muted-foreground hover:underline">
           ← Back to catalogue
         </Link>
         <div className="mt-4">
           <ChallengeDetail challenge={challenge} />
         </div>
-      </main>
+      </div>
     </>
   );
 }

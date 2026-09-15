@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { LabStatusFilter } from "@/components/admin/lab-status-filter";
 import { TerminateLab } from "@/components/admin/terminate-lab";
 import { Badge } from "@/components/ui/badge";
@@ -41,8 +40,7 @@ export default async function AdminLabsPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold">Lab monitoring</h1>
@@ -122,7 +120,7 @@ export default async function AdminLabsPage({
             </Table>
           )}
         </div>
-      </main>
+      </div>
     </>
   );
 }

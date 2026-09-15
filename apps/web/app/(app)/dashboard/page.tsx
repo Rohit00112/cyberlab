@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
+import { AnimatedNumber } from "@/components/motion/animated-number";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { PageHeader } from "@/components/page-header";
 import { RequireAuth } from "@/components/providers/require-auth";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -34,26 +35,6 @@ import {
 import { cn } from "@/lib/utils";
 import type { Announcement } from "@/lib/notifications/types";
 import type { BadgeEarned } from "@/lib/badges/types";
-
-function AnimatedNumber({ value }: { value: number }) {
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    let frame = 0;
-    const start = performance.now();
-    const duration = 800;
-    function step(now: number) {
-      const progress = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setDisplay(Math.round(eased * value));
-      if (progress < 1) frame = requestAnimationFrame(step);
-    }
-    frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
-  }, [value]);
-
-  return <>{display.toLocaleString()}</>;
-}
 
 function StatCard({
   label,
@@ -168,8 +149,7 @@ export default function DashboardPage() {
 
   return (
     <RequireAuth>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         {announcement && !dismissedAnn ? (
           <div className="mb-6 flex items-start justify-between gap-4 rounded-xl border border-cyber/40 bg-gradient-to-r from-cyber/10 via-cyber/5 to-card p-4">
             <div className="flex items-start gap-3">
@@ -365,8 +345,8 @@ export default function DashboardPage() {
                     "hover:-translate-y-0.5 hover:border-cyber/40 hover:shadow-[0_0_18px_-8px_var(--cyber)]"
                   )}
                 >
-                  <span className="text-3xl transition-transform group-hover:scale-110 inline-block">
-                    {b.icon ?? "🏅"}
+                  <span className="text-primary transition-transform group-hover:scale-110 inline-block">
+                    <BadgeIcon badge={b} className="size-6" />
                   </span>
                   <p className="mt-2 truncate text-xs font-semibold">{b.name}</p>
                   <p className="mt-0.5 text-[10px] text-muted-foreground">
@@ -396,7 +376,7 @@ export default function DashboardPage() {
             </div>
           </div>
         ) : null}
-      </main>
+      </div>
     </RequireAuth>
   );
 }

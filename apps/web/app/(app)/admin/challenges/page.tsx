@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { ChallengeActions } from "@/components/admin/challenge-actions";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -36,8 +35,7 @@ export default async function AdminChallengesPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold">Challenge management</h1>
@@ -99,7 +97,7 @@ export default async function AdminChallengesPage() {
             </Table>
           )}
         </div>
-      </main>
+      </div>
     </>
   );
 }

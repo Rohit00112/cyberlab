@@ -1,7 +1,6 @@
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { CompetitionAdminActions } from "@/components/admin/competition-actions";
 import { CompetitionChallengePicker } from "@/components/admin/competition-challenge-picker";
 import { CompetitionForm } from "@/components/admin/competition-form";
@@ -36,8 +35,7 @@ export default async function ManageCompetitionPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 p-6">
+            <div className="contents">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold">{competition.title}</h1>
@@ -105,7 +103,7 @@ export default async function ManageCompetitionPage({
             />
           )}
         </section>
-      </main>
+      </div>
     </>
   );
 }

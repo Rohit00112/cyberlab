@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { RequireAuth } from "@/components/providers/require-auth";
+import { AnimatedNumber } from "@/components/motion/animated-number";
+import { BadgeIcon } from "@/components/badges/badge-icon";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -13,13 +14,25 @@ import {
 } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import type { BadgeEarned, SkillOut, SkillProfile } from "@/lib/skills/types";
+import { AwardIcon, StarIcon, TargetIcon } from "lucide-react";
 
-function StatCard({ label, value }: { label: string; value: number }) {
+const STAT_ICONS = [StarIcon, TargetIcon, AwardIcon];
+
+function StatCard({ label, value, index }: { label: string; value: number; index: number }) {
+  const Icon = STAT_ICONS[index % STAT_ICONS.length];
   return (
-    <Card>
-      <CardContent className="pt-6">
-        <p className="text-sm text-muted-foreground">{label}</p>
-        <p className="mt-1 text-3xl font-semibold tabular-nums">{value}</p>
+    <Card className="group relative overflow-hidden">
+      <div aria-hidden className="absolute -top-8 -right-8 size-24 rounded-full bg-primary/5 transition-transform duration-300 group-hover:scale-150" />
+      <CardContent className="relative pt-6">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">{label}</p>
+          <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary [&_svg]:size-4">
+            <Icon />
+          </span>
+        </div>
+        <p className="mt-2 text-3xl font-bold tabular-nums">
+          <AnimatedNumber value={value} />
+        </p>
       </CardContent>
     </Card>
   );
@@ -49,8 +62,7 @@ export default function SkillsPage() {
 
   return (
     <RequireAuth>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">Skills &amp; badges</h1>
           <p className="mt-1 text-muted-foreground">
@@ -59,9 +71,9 @@ export default function SkillsPage() {
         </div>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
-          <StatCard label="Points" value={profile?.total_points ?? 0} />
-          <StatCard label="Solved" value={profile?.solved_count ?? 0} />
-          <StatCard label="Badges" value={badges.length} />
+          <StatCard label="Points" value={profile?.total_points ?? 0} index={0} />
+          <StatCard label="Solved" value={profile?.solved_count ?? 0} index={1} />
+          <StatCard label="Badges" value={badges.length} index={2} />
         </div>
 
         <Card className="mt-6">
@@ -114,7 +126,7 @@ export default function SkillsPage() {
                     className="rounded-lg border p-3 flex items-start gap-3"
                   >
                     <span className="text-2xl" aria-hidden>
-                      {badge.icon ?? "🏅"}
+                      <BadgeIcon badge={badge} className="size-6 shrink-0" />
                     </span>
                     <div className="min-w-0">
                       <p className="font-medium">{badge.name}</p>
@@ -160,7 +172,7 @@ export default function SkillsPage() {
             )}
           </CardContent>
         </Card>
-      </main>
+      </div>
     </RequireAuth>
   );
 }

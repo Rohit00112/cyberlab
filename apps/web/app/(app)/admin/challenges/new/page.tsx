@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
 import { ChallengeForm } from "@/components/admin/challenge-form";
 import { buttonVariants } from "@/components/ui/button";
 import { canServerUser, serverSessionUser } from "@/lib/api-server";
@@ -17,8 +16,7 @@ export default async function NewChallengePage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 p-6">
+            <div className="contents">
         <div className="flex items-center gap-3">
           <Link href="/admin/challenges" className={buttonVariants({ variant: "outline", size: "sm" })}>
             ← Back
@@ -28,7 +26,7 @@ export default async function NewChallengePage() {
         <div className="mt-6">
           <ChallengeForm mode="create" />
         </div>
-      </main>
+      </div>
     </>
   );
 }

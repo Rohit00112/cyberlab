@@ -1,17 +1,7 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
+import { CompetitionCard } from "@/components/competitions/competition-card";
 import { CompetitionStatusFilter } from "@/components/competitions/competition-status-filter";
-import { CompetitionStatusBadge } from "@/components/competitions/competition-status-badge";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { serverApiGet, serverSessionUser } from "@/lib/api-server";
 import type { CompetitionSummary } from "@/lib/competitions/types";
 
@@ -32,77 +22,29 @@ export default async function CompetitionsPage({
   const competitions = result.data;
 
   return (
-    <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Competitions</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Timed CTF events. Register before they start, solve challenges, climb
-              the leaderboard.
-            </p>
-          </div>
-          <CompetitionStatusFilter />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Competitions</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Timed CTF events. Register before they start, solve, and climb the leaderboard.
+          </p>
         </div>
+        <CompetitionStatusFilter />
+      </div>
 
-        <div className="mt-6">
-          {competitions.length === 0 ? (
-            <p className="text-muted-foreground">
-              No competitions yet. Check back soon.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Title</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Window</TableHead>
-                  <TableHead>Challenges</TableHead>
-                  <TableHead>Participants</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {competitions.map((competition) => (
-                  <TableRow key={competition.id}>
-                    <TableCell>
-                      <a
-                        href={`/competitions/${competition.id}`}
-                        className="font-medium hover:underline"
-                      >
-                        {competition.title}
-                      </a>
-                      <p className="text-xs text-muted-foreground">
-                        {competition.description ?? "No description"}
-                      </p>
-                    </TableCell>
-                    <TableCell>
-                      <CompetitionStatusBadge status={competition.status} />
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {competition.start_at && competition.end_at ? (
-                        <>
-                          {new Date(competition.start_at).toLocaleString()}
-                          <br />
-                          {new Date(competition.end_at).toLocaleString()}
-                        </>
-                      ) : (
-                        "TBD"
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">
-                        {competition.challenge_count}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{competition.participant_count}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+      {competitions.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-16 text-center">
+          <p className="text-sm font-medium">No competitions yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">Check back soon — the next event is being prepared.</p>
         </div>
-      </main>
-    </>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {competitions.map((competition) => (
+            <CompetitionCard key={competition.id} competition={competition} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

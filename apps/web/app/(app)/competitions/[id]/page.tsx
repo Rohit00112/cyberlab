@@ -1,6 +1,5 @@
 import { redirect, notFound } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { CompetitionLeaderboard } from "@/components/competitions/leaderboard";
 import { CompetitionRegisterCard } from "@/components/competitions/register-card";
 import { CompetitionStatusBadge } from "@/components/competitions/competition-status-badge";
@@ -44,8 +43,7 @@ export default async function CompetitionDetailPage({
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
@@ -161,7 +159,7 @@ export default async function CompetitionDetailPage({
             </div>
           </section>
         </div>
-      </main>
+      </div>
     </>
   );
 }

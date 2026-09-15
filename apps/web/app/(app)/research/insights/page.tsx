@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import {
   Table,
   TableBody,
@@ -57,8 +56,7 @@ export default async function ResearchInsightsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">Research insights</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -165,7 +163,7 @@ export default async function ResearchInsightsPage() {
             )}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 
-import { AppNav } from "@/components/app-nav";
 import { DatasetActions } from "@/components/research/dataset-actions";
 import { DatasetForm } from "@/components/research/dataset-form";
 import { Badge } from "@/components/ui/badge";
@@ -29,8 +28,7 @@ export default async function ResearchDatasetsPage() {
 
   return (
     <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
+            <div className="contents">
         <div>
           <h1 className="text-2xl font-semibold">Research datasets</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -105,7 +103,7 @@ export default async function ResearchDatasetsPage() {
             )}
           </div>
         </section>
-      </main>
+      </div>
     </>
   );
 }

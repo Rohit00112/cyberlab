@@ -1,15 +1,6 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 
-import { AppNav } from "@/components/app-nav";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { LeaderboardTable } from "@/components/leaderboard/leaderboard-table";
 import { serverApiGet } from "@/lib/api-server";
 import type { LeaderboardEntry } from "@/lib/challenges/types";
 
@@ -21,51 +12,22 @@ export default async function LeaderboardPage() {
   const entries = result.data;
 
   return (
-    <>
-      <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 p-6">
-        <h1 className="text-2xl font-semibold">Leaderboard</h1>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Leaderboard</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Ranked by total points; ties break on earliest solve.
         </p>
-        <div className="mt-4">
-          {entries.length === 0 ? (
-            <p className="text-muted-foreground">
-              No solves yet — be the first to crack a flag.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-14">Rank</TableHead>
-                  <TableHead>Player</TableHead>
-                  <TableHead className="text-right">Solved</TableHead>
-                  <TableHead className="text-right">Points</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {entries.map((entry) => (
-                  <TableRow key={entry.user_id}>
-                    <TableCell className="font-mono tabular-nums">{entry.rank}</TableCell>
-                    <TableCell className="font-medium">
-                      <Link
-                        href={`/portfolio/${entry.user_id}`}
-                        className="hover:underline text-foreground"
-                      >
-                        {entry.display_name ?? "Anonymous"}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">{entry.solved_count}</TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums text-primary">
-                      {entry.points}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+      </div>
+
+      {entries.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-16 text-center">
+          <p className="text-sm font-medium">No solves yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">Be the first to crack a flag.</p>
         </div>
-      </main>
-    </>
+      ) : (
+        <LeaderboardTable entries={entries} />
+      )}
+    </div>
   );
 }
