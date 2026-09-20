@@ -57,10 +57,15 @@ class Settings(BaseSettings):
     lab_provider: str = "docker"
 
     # Proxmox VE connection (Track 4, only used when lab_provider=proxmox)
-    proxmox_api_url: str = "https://localhost:8006"
-    proxmox_api_token_id: str = ""
-    proxmox_api_token_secret: str = ""
+    # Env vars: PROXMOX_ENDPOINT, PROXMOX_USER, PROXMOX_TOKEN_UUID,
+    #           PROXMOX_NODE, PROXMOX_STORAGE, PROXMOX_BRIDGE, PROXMOX_VERIFY_SSL
+    proxmox_endpoint: str = "https://localhost:8006"
+    proxmox_user: str = ""          # e.g. root@pam!cyberlab
+    proxmox_token_uuid: str = ""    # API token UUID
     proxmox_node: str = "pve"
+    proxmox_storage: str = "local-lvm"
+    proxmox_bridge: str = "vmbr0"
+    proxmox_verify_ssl: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:

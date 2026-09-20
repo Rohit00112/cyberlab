@@ -39,6 +39,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # Long test-data literals / legacy formations predate the 100-char lint; kept
 # as-is to avoid churning older fixtures. New code must stay lint-clean.
 [tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]
 "app/services/skill_profiles.py" = ["E501"]
 "app/services/labs.py" = ["F401"]
 "tests/test_recommendations.py" = ["E501"]

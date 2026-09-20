@@ -3,11 +3,14 @@
 Implements the LabProvider interface using the Proxmox VE REST API for VM-based
 labs. VMs are provisioned from templates with cloud-init for configuration.
 
-Requires Proxmox VE credentials in settings:
-  - proxmox_api_url
-  - proxmox_api_token_id
-  - proxmox_api_token_secret
-  - proxmox_node
+Requires Proxmox VE credentials in settings (env vars):
+  - PROXMOX_ENDPOINT   → proxmox_endpoint
+  - PROXMOX_USER       → proxmox_user       (e.g. root@pam!cyberlab)
+  - PROXMOX_TOKEN_UUID → proxmox_token_uuid  (API token UUID)
+  - PROXMOX_NODE       → proxmox_node
+  - PROXMOX_STORAGE    → proxmox_storage
+  - PROXMOX_BRIDGE     → proxmox_bridge
+  - PROXMOX_VERIFY_SSL → proxmox_verify_ssl
 """
 from __future__ import annotations
 
@@ -31,12 +34,16 @@ class ProxmoxLabProvider(LabProvider):
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.api_url = settings.proxmox_api_url.rstrip("/")
+        self.api_url = settings.proxmox_endpoint.rstrip("/")
         self.node = settings.proxmox_node
+        self.storage = settings.proxmox_storage
+        self.bridge = settings.proxmox_bridge
+        self.verify_ssl = settings.proxmox_verify_ssl
+        # PVE API token header: PVEAPIToken=user@realm!tokenname=token-uuid
         self.headers = {
             "Authorization": (
-                f"PVEAPIToken={settings.proxmox_api_token_id}"
-                f"={settings.proxmox_api_token_secret}"
+                f"PVEAPIToken={settings.proxmox_user}"
+                f"={settings.proxmox_token_uuid}"
             ),
         }
 
@@ -49,7 +56,7 @@ class ProxmoxLabProvider(LabProvider):
         params: dict | None = None,
     ) -> dict:
         url = f"{self.api_url}{path}"
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
             response = await client.request(
                 method, url,
                 headers=self.headers,
@@ -107,11 +114,12 @@ class ProxmoxLabProvider(LabProvider):
         )
         new_vmid = str(next_id_data) if isinstance(next_id_data, int) else str(next_id_data)
 
-        # Clone from template
+        # Clone from template; use configured storage for the full clone
         clone_params: dict[str, Any] = {
             "newid": int(new_vmid),
             "name": name,
             "full": 1,
+            "storage": self.storage,
         }
         await self._request(
             "POST",
@@ -120,13 +128,14 @@ class ProxmoxLabProvider(LabProvider):
         )
 
         # Configure resources
+        bridge = network or self.bridge
         config_params: dict[str, Any] = {}
         if cpu_limit:
             config_params["cores"] = max(1, int(cpu_limit))
         if memory_limit_mb:
             config_params["memory"] = memory_limit_mb
-        if network:
-            config_params["net0"] = f"virtio,bridge={network}"
+        if bridge:
+            config_params["net0"] = f"virtio,bridge={bridge}"
 
         if config_params:
             await self._request(
@@ -236,3 +245,4 @@ class ProxmoxLabProvider(LabProvider):
             return "[no output]"
         except ProxmoxError:
             return "[logs unavailable: guest agent not responding]"
+

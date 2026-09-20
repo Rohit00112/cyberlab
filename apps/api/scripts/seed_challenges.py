@@ -12,7 +12,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
+
+API_DIR = Path(__file__).resolve().parents[1]
+if str(API_DIR) not in sys.path:
+    sys.path.insert(0, str(API_DIR))
 
 import yaml
 from sqlalchemy import select
@@ -64,28 +69,38 @@ async def seed(directory: Path | None = None) -> None:
         author_id = admin.id if admin else None
 
         inserted = 0
-        skipped = 0
+        updated = 0
         for _path, spec in specs:
             slug = slugify(spec["title"])
+            flag = spec.pop("flag")
+            env_type = spec.pop("environment_type", "none")
+            hint_penalty = spec.pop("hint_penalty", 0)
+            flag_hash_val = hash_flag(flag)
+
             existing = await db.scalar(select(Challenge).where(Challenge.slug == slug))
             if existing:
-                skipped += 1
+                existing.flag_hash = flag_hash_val
+                existing.environment_type = env_type
+                existing.hint_penalty = hint_penalty
+                for k, v in spec.items():
+                    setattr(existing, k, v)
+                updated += 1
                 continue
-            flag = spec.pop("flag")
+
             challenge = Challenge(
                 slug=slug,
                 author_id=author_id,
-                flag_hash=hash_flag(flag),
+                flag_hash=flag_hash_val,
                 status="published",
-                environment_type=spec.get("environment_type", "none"),
-                hint_penalty=spec.get("hint_penalty", 0),
+                environment_type=env_type,
+                hint_penalty=hint_penalty,
                 **spec,
             )
             db.add(challenge)
             inserted += 1
 
         await db.commit()
-        print(f"seed_challenges: {inserted} inserted, {skipped} skipped")
+        print(f"seed_challenges: {inserted} inserted, {updated} updated")
 
 
 def main() -> None:

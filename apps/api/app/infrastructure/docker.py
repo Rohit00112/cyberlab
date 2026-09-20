@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 from app.core.config import get_settings
@@ -43,11 +44,21 @@ def _parse_response(raw: bytes) -> tuple[int, bytes]:
     return status, body
 
 
-async def _request(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, bytes]:
+def _get_docker_socket() -> str:
     settings = get_settings()
+    socket_path = settings.lab_docker_socket
+    if not os.path.exists(socket_path):
+        mac_socket = os.path.expanduser("~/.docker/run/docker.sock")
+        if os.path.exists(mac_socket):
+            return mac_socket
+    return socket_path
+
+
+async def _request(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, bytes]:
+    socket_path = _get_docker_socket()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(settings.lab_docker_socket), timeout=5
+            asyncio.open_unix_connection(socket_path), timeout=5
         )
     except (TimeoutError, OSError) as exc:
         raise DockerError(f"Docker socket unavailable: {exc}") from exc

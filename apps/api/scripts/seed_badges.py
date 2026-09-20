@@ -6,6 +6,12 @@ Run via: apps/api/.venv/bin/python -m scripts.seed_badges
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
+
+API_DIR = Path(__file__).resolve().parents[1]
+if str(API_DIR) not in sys.path:
+    sys.path.insert(0, str(API_DIR))
 
 from sqlalchemy import select
 
