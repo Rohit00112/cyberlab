@@ -167,7 +167,19 @@ export interface Lab {
   id: string;
   challenge_id: string;
   challenge_slug: string | null;
-  status: "provisioning" | "running" | "stopped" | "expired" | "error";
+  status:
+    | "queued"
+    | "provisioning"
+    | "starting"
+    | "running"
+    | "stopping"
+    | "stopped"
+    | "resetting"
+    | "terminating"
+    | "terminated"
+    | "failed"
+    | "expired"
+    | "error";
   network_name: string | null;
   connection_hint: string | null;
   container_name: string | null;
@@ -176,6 +188,8 @@ export interface Lab {
   created_at: string;
   updated_at: string;
   challenge_title: string | null;
+  job_id?: string | null;
+  time_remaining_seconds?: number | null;
 }
 
 export interface LabAdmin extends Lab {
@@ -197,10 +211,17 @@ export interface LabHealth {
   labs: { running: number; provisioning: number; total: number };
 }
 
-export const LAB_STATUS_LABELS: Record<Lab["status"], string> = {
+export const LAB_STATUS_LABELS: Record<string, string> = {
+  queued: "Queued",
   provisioning: "Provisioning",
+  starting: "Starting",
   running: "Running",
+  stopping: "Stopping",
   stopped: "Stopped",
+  resetting: "Resetting",
+  terminating: "Terminating",
+  terminated: "Terminated",
+  failed: "Failed",
   expired: "Expired",
   error: "Error",
 };
