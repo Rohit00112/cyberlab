@@ -36,15 +36,45 @@ PROXMOX_NODE=pve-node1
 PROXMOX_STORAGE=local-lvm
 PROXMOX_BRIDGE=vmbr1
 PROXMOX_VERIFY_SSL=true
+
+# Shared base VM template VMID cloned for every lab (numeric PVE template VMID)
+LAB_IMAGE=9000
 ```
 
 ### 2.2 Proxmox VE Setup
 
 When using Proxmox:
-1. **Create API Token**: In Proxmox VE GUI, navigate to `Datacenter > Permissions > API Tokens`. Add token `cyberlab` for user with `PVEVMAdmin` role.
-2. **Prepare Templates**: Create base VM templates with `qemu-guest-agent` installed and cloud-init enabled.
-3. **Template VMIDs**: Specify template VMID in each challenge's `lab_config` JSON (e.g. `{"image": "9000", "expiry_minutes": 60}`).
-4. **IP Discovery**: The provider polls the Proxmox QEMU Guest Agent for assigned IPv4 addresses on the internal bridge.
+
+1. **Create API Token**: In Proxmox VE GUI, navigate to `Datacenter > Permissions > API Tokens`. Add token `cyberlab` for user with `PVEVMAdmin` role. Use the token's **UUID** as `PROXMOX_TOKEN_UUID`.
+2. **Create storage** (if none exists): `Datacenter > Storage > Add > Directory` — e.g. storage ID `local-lvm` (LVM-Thin) or a directory storage. The configured `PROXMOX_STORAGE` must exist, otherwise clones fail.
+3. **Create a Linux bridge**: `Datacenter > <node> > Network > Create > Linux Bridge`, e.g. `vmbr1` on the interface that reaches the CyberLab network. The configured `PROXMOX_BRIDGE` must exist on the node.
+4. **Prepare a base template** (`qemu-guest-agent` installed, cloud-init enabled):
+   - Create a VM with the Cloud-Init CPU type / assist, attach an ISO or imported disk, boot it, install the guest OS, install `qemu-guest-agent`, and enable it (`systemctl enable --now qemu-guest-agent`).
+   - Add a cloud-init drive (`CloudInit Drive > Enable`), set a default IP config if desired, then **Convert to Template** (`Right-click VM > Convert to Template`).
+   - Record the template's VMID.
+5. **Point the API at the template**: all `docker`-type challenges fall back to the configured default image, so set
+   `LAB_IMAGE=<template-vmid>` in `.env` (a numeric PVE template VMID, **not** a Docker image name like `alpine:3.20`). Per-challenge overrides are still possible via each challenge's `lab_config` JSON, e.g. `{"image": "9000", "expiry_minutes": 60}`.
+6. **IP Discovery**: The provider polls the Proxmox QEMU Guest Agent for assigned IPv4 addresses, so the template must have `qemu-guest-agent` running and the VM attached to the configured bridge.
+
+> **Plain-HTTP gotcha**: Proxmox answers on `https://` and returns empty-body `301/308` redirects for `http://` requests. Always set `PROXMOX_ENDPOINT=https://<host>:8006` (with `PROXMOX_VERIFY_SSL=false` for self-signed certs). A missing/mismatched bridge name or storage makes launches surface as `503 No such network/storage` errors.
+>
+> **Isolation note**: per-user isolated bridge networks are a Docker concept. On Proxmox, VMs attach to the shared configured bridge — use Proxmox SDN VLANs at the network level if per-user isolation is required.
+
+### 2.3 Readiness Check & Automated Template Build
+
+Two helper scripts ship in `apps/api/scripts/`:
+
+- **`proxmox_check.py`** — run from anywhere the API `.env` is available to see exactly which PVE prerequisite is missing (endpoint/auth, node, storage, bridge, template VMID). Exits non-zero until everything passes:
+  ```bash
+  cd "$REPO_ROOT"           # so it reads the root .env
+  apps/api/.venv/bin/python apps/api/scripts/proxmox_check.py
+  ```
+- **`proxmox_template.sh`** — run **on the PVE host as root** to build a cloud-init base template. It bakes `qemu-guest-agent` into a Debian cloud image **offline** with `virt-customize` (`apt install -y libguestfs-tools` first), imports it, attaches a cloud-init drive, and converts it to a template — no guest boot required:
+  ```bash
+  apt-get update && apt-get install -y libguestfs-tools
+  sudo PVMID=9000 PM_STORAGE=local-lvm PM_BRIDGE=vmbr1 apps/api/scripts/proxmox_template.sh
+  ```
+  Then set `LAB_IMAGE=9000` in the API `.env` and restart the API. Customize via `PVMID`, `PM_STORAGE`, `PM_BRIDGE`, `PM_MEMORY`, `PM_CORES`, `PM_DISK_GB`, `PM_IMAGE_URL`, `PM_CI_USER`, `PM_CI_PASS`, `PM_SSH_KEY`.
 
 ### 2.3 Inspecting and Debugging Labs
 

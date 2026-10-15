@@ -125,3 +125,116 @@ class TestProviderFactory:
             provider = get_lab_provider()
             assert isinstance(provider, FakeLabProvider)
             get_lab_provider.cache_clear()
+
+    def test_explicit_provider_name(self):
+        from unittest.mock import patch
+
+        from app.infrastructure.factory import get_lab_provider
+        get_lab_provider.cache_clear()
+
+        with patch("app.infrastructure.factory.get_settings"):
+            assert get_lab_provider("docker") is get_lab_provider("docker")
+            assert get_lab_provider("fake") is not get_lab_provider("docker")
+            assert isinstance(get_lab_provider("fake"), FakeLabProvider)
+        get_lab_provider.cache_clear()
+
+
+def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
+    """Lifecycle ops must target the provider recorded on the lab, so a lab
+    provisioned under Docker is not sent to Proxmox after a config switch."""
+    from unittest.mock import Mock
+
+    from app.models.labs import LabInstance
+    from app.services.labs import _lab_provider_for
+
+    resolve = Mock()
+    monkeypatch.setattr("app.services.labs.get_lab_provider", resolve)
+    lab = LabInstance(provider="docker", provider_ref="cdf8-...container-id")
+    _lab_provider_for(lab)
+    resolve.assert_called_once_with("docker")
+
+
+class TestProxmoxRequest:
+    """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
+
+    def _fake_client(self, response):
+        class FakeClient:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def request(self, *args, **kwargs):
+                return self._response
+
+        return FakeClient(response)
+
+    @pytest.mark.asyncio
+    async def test_redirect_raises_proxmox_error_not_json_error(self, monkeypatch):
+        """A 308 redirect (e.g. invalid/non-numeric VMID) must not crash with a
+        raw JSONDecodeError — the body is empty and not JSON."""
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        class FakeResponse:
+            status_code = 308
+            text = ""
+            headers = {"location": "http://pve:8006/api2/json/nodes/x/qemu/"}
+
+            def json(self):
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+        monkeypatch.setattr(
+            "app.infrastructure.proxmox.httpx.AsyncClient",
+            lambda *a, **kw: self._fake_client(FakeResponse()),
+        )
+        provider = ProxmoxLabProvider()
+        with pytest.raises(ProxmoxError, match="redirect"):
+            await provider._request("POST", "/qemu/not-a-vmid/status/stop")
+
+    @pytest.mark.asyncio
+    async def test_non_json_body_raises_proxmox_error(self, monkeypatch):
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        class FakeResponse:
+            status_code = 200
+            text = "<html>not json</html>"
+            headers = {}
+
+            def json(self):
+                raise ValueError("Expecting value")
+
+        monkeypatch.setattr(
+            "app.infrastructure.proxmox.httpx.AsyncClient",
+            lambda *a, **kw: self._fake_client(FakeResponse()),
+        )
+        provider = ProxmoxLabProvider()
+        with pytest.raises(ProxmoxError, match="non-JSON"):
+            await provider._request("GET", "/version")
+
+    @pytest.mark.asyncio
+    async def test_http_error_wrapped_as_proxmox_error(self, monkeypatch):
+        import httpx
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def request(self, *args, **kwargs):
+                raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(
+            "app.infrastructure.proxmox.httpx.AsyncClient",
+            lambda *a, **kw: FakeClient(),
+        )
+        provider = ProxmoxLabProvider()
+        with pytest.raises(ProxmoxError, match="unreachable"):
+            await provider._request("GET", "/version")

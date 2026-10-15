@@ -57,18 +57,37 @@ class ProxmoxLabProvider(LabProvider):
     ) -> dict:
         url = f"{self.api_url}{path}"
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
-            response = await client.request(
-                method, url,
-                headers=self.headers,
-                json=json_data,
-                params=params,
-            )
-            if response.status_code >= 400:
-                raise ProxmoxError(
-                    f"Proxmox API {method} {path} failed: "
-                    f"{response.status_code} {response.text}"
+            try:
+                response = await client.request(
+                    method, url,
+                    headers=self.headers,
+                    json=json_data,
+                    params=params,
                 )
-            return response.json().get("data", {})
+            except httpx.HTTPError as exc:
+                raise ProxmoxError(
+                    f"Proxmox API {method} {path} unreachable: {exc}"
+                ) from exc
+        if response.status_code >= 400:
+            raise ProxmoxError(
+                f"Proxmox API {method} {path} failed: "
+                f"{response.status_code} {response.text}"
+            )
+        if response.status_code >= 300:
+            raise ProxmoxError(
+                f"Proxmox API {method} {path} unexpected redirect "
+                f"{response.status_code} to "
+                f"{response.headers.get('location', '')!r}; "
+                "the resource id is probably invalid"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ProxmoxError(
+                f"Proxmox API {method} {path} returned a non-JSON body "
+                f"({response.status_code}): {exc}"
+            ) from exc
+        return data.get("data", {}) if isinstance(data, dict) else data
 
     async def ping(self) -> bool:
         try:
@@ -127,8 +146,10 @@ class ProxmoxLabProvider(LabProvider):
             json_data=clone_params,
         )
 
-        # Configure resources
-        bridge = network or self.bridge
+        # Configure resources. Proxmox VMs attach to a physical/SDN bridge;
+        # the per-user Docker-style network name cannot be used directly.
+        # Prefer the configured bridge over the passed-in network name.
+        bridge = self.bridge or network
         config_params: dict[str, Any] = {}
         if cpu_limit:
             config_params["cores"] = max(1, int(cpu_limit))

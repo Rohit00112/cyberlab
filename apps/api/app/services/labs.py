@@ -17,7 +17,7 @@ from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, hash_flag
 from app.infrastructure import docker as docker_adapter
-from app.infrastructure.base import LabProviderError
+from app.infrastructure.base import LabProvider, LabProviderError
 from app.infrastructure.docker import DockerError
 from app.infrastructure.factory import get_lab_provider
 from app.models.challenges import Challenge
@@ -49,6 +49,11 @@ def _lab_settings(challenge: Challenge | None) -> dict:
         "flag_path": flag_path,
     }
     return caps
+
+
+def _lab_provider_for(lab: LabInstance) -> LabProvider:
+    """Resolve the provider that owns an existing lab's infrastructure."""
+    return get_lab_provider(lab.provider)
 
 
 def _container_name(lab: LabInstance) -> str:
@@ -207,7 +212,7 @@ async def stop_lab(
     ref = lab.provider_ref or lab.container_id
     if lab.status == "running" and ref:
         try:
-            await get_lab_provider().stop_lab(ref)
+            await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -236,7 +241,7 @@ async def reset_lab(
     ref = lab.provider_ref or lab.container_id
     if ref:
         try:
-            await provider.remove_lab(ref)
+            await _lab_provider_for(lab).remove_lab(ref)
         except (DockerError, LabProviderError):
             pass
 
@@ -285,7 +290,7 @@ async def expire_lab(
     ref = lab.provider_ref or lab.container_id
     if lab.status == "running" and ref:
         try:
-            await get_lab_provider().stop_lab(ref)
+            await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError):
             pass
     lab.status = "expired"
@@ -307,7 +312,6 @@ async def expire_stale_labs(db: AsyncSession) -> int:
     changed = 0
     now = datetime.now(UTC)
     settings = get_settings()
-    provider = get_lab_provider()
     rows = (await db.scalars(select(LabInstance))).all()
     for lab in rows:
         if (
@@ -318,7 +322,7 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             ref = lab.provider_ref or lab.container_id
             if ref:
                 try:
-                    await provider.stop_lab(ref)
+                    await _lab_provider_for(lab).stop_lab(ref)
                 except (DockerError, LabProviderError):
                     pass
             lab.status = "expired"
@@ -428,7 +432,7 @@ async def admin_terminate_lab(
 ) -> LabAdminOut:
     ref = lab.provider_ref or lab.container_id
     if ref:
-        provider = get_lab_provider()
+        provider = _lab_provider_for(lab)
         try:
             await provider.stop_lab(ref)
             await provider.remove_lab(ref)
@@ -494,7 +498,7 @@ async def lab_provider_status(
     if not ref:
         return {"status": lab.status, "provider": lab.provider, "detail": "no provider ref"}
 
-    provider = get_lab_provider()
+    provider = _lab_provider_for(lab)
     result = await provider.lab_status(ref)
     result["lab_id"] = str(lab.id)
     result["provider"] = lab.provider
@@ -515,6 +519,6 @@ async def lab_provider_logs(
     if not ref:
         return {"logs": "", "detail": "no provider ref"}
 
-    provider = get_lab_provider()
+    provider = _lab_provider_for(lab)
     logs = await provider.lab_logs(ref, tail=tail)
     return {"lab_id": str(lab.id), "provider": lab.provider, "logs": logs}
