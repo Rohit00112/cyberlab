@@ -23,7 +23,9 @@ from app.api.recommendations import router as recommendations_router
 from app.api.research import router as research_router
 from app.api.skills import router as skills_router
 from app.api.submissions import router as submissions_router
+from app.api.templates import router as templates_router
 from app.api.users import router as users_router
+from app.api.vpn import router as vpn_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -83,6 +85,8 @@ def create_app() -> FastAPI:
     app.include_router(recommendations_router, prefix="/api/v1")
     app.include_router(notifications_router, prefix="/api/v1")
     app.include_router(research_router, prefix="/api/v1")
+    app.include_router(templates_router, prefix="/api/v1")
+    app.include_router(vpn_router, prefix="/api/v1")
     return app
 
 

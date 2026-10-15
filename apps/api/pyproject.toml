@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "pyjwt[crypto]>=2.9",
     "PyYAML>=6.0",
+    "celery>=5.4",
 ]
 
 [dependency-groups]

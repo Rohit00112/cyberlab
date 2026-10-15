@@ -20,6 +20,12 @@ class LabOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     error_message: str | None = None
+    job_id: uuid.UUID | None = None
+    time_remaining_seconds: int | None = None
+
+
+class LabExtendIn(BaseModel):
+    additional_minutes: int = 30
 
 
 class LabAdminOut(LabOut):

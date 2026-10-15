@@ -16,24 +16,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, hash_flag
+from app.core.states import ACTIVE_STATES, LabState, transition
 from app.infrastructure import docker as docker_adapter
 from app.infrastructure.base import LabProvider, LabProviderError
 from app.infrastructure.docker import DockerError
 from app.infrastructure.factory import get_lab_provider
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
+from app.models.machine_templates import MachineTemplateVersion
+from app.models.provisioning import ProvisioningJob
 from app.models.users import User
 from app.schemas.lab import LabAdminOut, LabOut
 from app.services.users import record_audit
 
-ACTIVE_STATUSES = {"provisioning", "running"}
+ACTIVE_STATUSES = {s.value for s in ACTIVE_STATES}
 DOCKER_TIMEOUT = 30
 
 
-def _lab_settings(challenge: Challenge | None) -> dict:
-    """Resolve effective lab config from the challenge, with server-enforced caps."""
+def _lab_settings(
+    challenge: Challenge | None,
+    template_version: MachineTemplateVersion | None = None,
+) -> dict:
+    """Resolve effective lab config from the challenge and optional template version."""
     settings = get_settings()
     cfg = (challenge.lab_config or {}) if challenge else {}
+    if template_version and template_version.config_snapshot:
+        snap = template_version.config_snapshot
+        if template_version.image_ref:
+            cfg = {**cfg, "image": template_version.image_ref}
+        elif snap.get("base_image"):
+            cfg = {**cfg, "image": snap["base_image"]}
+
     image = cfg.get("image") or settings.lab_image
     expiry = cfg.get("expiry_minutes") or settings.lab_default_expiry_minutes
     max_instances = cfg.get("max_instances")
@@ -92,9 +105,17 @@ async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:
     )
 
 
-async def _to_out(db: AsyncSession, lab: LabInstance) -> LabOut:
+async def _to_out(
+    db: AsyncSession, lab: LabInstance, job_id: uuid.UUID | None = None
+) -> LabOut:
     await db.refresh(lab)
     challenge = await db.get(Challenge, lab.challenge_id)
+    time_remaining: int | None = None
+    if lab.expires_at:
+        now = datetime.now(UTC)
+        exp = lab.expires_at if lab.expires_at.tzinfo else lab.expires_at.replace(tzinfo=UTC)
+        time_remaining = max(0, int((exp - now).total_seconds()))
+
     return LabOut(
         id=lab.id,
         challenge_id=lab.challenge_id,
@@ -108,6 +129,8 @@ async def _to_out(db: AsyncSession, lab: LabInstance) -> LabOut:
         created_at=lab.created_at,
         updated_at=lab.updated_at,
         error_message=lab.error_message,
+        job_id=job_id,
+        time_remaining_seconds=time_remaining,
     )
 
 
@@ -120,6 +143,8 @@ async def launch_lab(
     user: CurrentUser,
     challenge: Challenge,
     *,
+    sync: bool = True,
+    idempotency_key: str | None = None,
     request: Request | None = None,
 ) -> LabOut:
     if not challenge.environment_type or challenge.environment_type == "none":
@@ -128,8 +153,25 @@ async def launch_lab(
             detail="This challenge does not provide a lab environment.",
         )
 
+    # 1. Idempotency guard: Return existing active lab if one is already running/provisioning
+    existing = (
+        await db.scalars(
+            select(LabInstance).where(
+                LabInstance.user_id == user.id,
+                LabInstance.challenge_id == challenge.id,
+                LabInstance.status.in_(ACTIVE_STATUSES),
+            )
+        )
+    ).first()
+    if existing:
+        return await _to_out(db, existing)
+
     settings = get_settings()
-    lab_cfg = _lab_settings(challenge)
+    template_ver = None
+    if getattr(challenge, "template_version_id", None):
+        template_ver = await db.get(MachineTemplateVersion, challenge.template_version_id)
+    lab_cfg = _lab_settings(challenge, template_ver)
+
     active = int(
         await db.scalar(
             select(func.count())
@@ -151,10 +193,50 @@ async def launch_lab(
             ),
         )
 
+    # If asynchronous launch requested:
+    if not sync:
+        lab = LabInstance(
+            user_id=user.id,
+            challenge_id=challenge.id,
+            status=LabState.QUEUED.value,
+            network_name=_network_name(user.id),
+        )
+        db.add(lab)
+        await db.commit()
+        await db.refresh(lab)
+
+        job = ProvisioningJob(
+            lab_instance_id=lab.id,
+            user_id=user.id,
+            challenge_id=challenge.id,
+            idempotency_key=idempotency_key,
+            status="pending",
+            config=lab_cfg,
+        )
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+
+        try:
+            from app.tasks.provisioning import provision_lab_task
+            t = provision_lab_task.delay(str(job.id))
+            job.celery_task_id = t.id
+            await db.commit()
+        except Exception:
+            import asyncio
+            from app.tasks.provisioning import execute_provisioning_job
+            asyncio.create_task(execute_provisioning_job(str(job.id)))
+
+        await record_audit(
+            db, event="lab.launch_queued", user_id=user.id, target_id=challenge.slug, request=request
+        )
+        return await _to_out(db, lab, job_id=job.id)
+
+    # Synchronous launch (default for backward compatibility)
     lab = LabInstance(
         user_id=user.id,
         challenge_id=challenge.id,
-        status="provisioning",
+        status=LabState.PROVISIONING.value,
         network_name=_network_name(user.id),
     )
     db.add(lab)
@@ -165,12 +247,15 @@ async def launch_lab(
         provider = get_lab_provider()
         await provider.ensure_network(lab.network_name)
         await _start_container(lab, lab_cfg)
-        lab.status = "running"
+        lab.status = transition(lab.status, LabState.RUNNING).value
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
     except (DockerError, LabProviderError) as exc:
-        lab.status = "error"
+        try:
+            lab.status = transition(lab.status, LabState.FAILED).value
+        except Exception:
+            lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
         raise HTTPException(
@@ -178,7 +263,10 @@ async def launch_lab(
             detail=f"Lab provisioning failed — infrastructure unavailable: {exc}",
         ) from None
     except Exception as exc:
-        lab.status = "error"
+        try:
+            lab.status = transition(lab.status, LabState.FAILED).value
+        except Exception:
+            lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
         raise HTTPException(
@@ -210,14 +298,19 @@ async def stop_lab(
     if not _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
-    if lab.status == "running" and ref:
+    if lab.status in (LabState.RUNNING.value, "running") and ref:
         try:
+            lab.status = transition(lab.status, LabState.STOPPING).value
+            await db.commit()
             await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
             ) from None
-    lab.status = "stopped"
+    try:
+        lab.status = transition(lab.status, LabState.STOPPED).value
+    except Exception:
+        lab.status = "stopped"
     await db.commit()
     await record_audit(
         db, event="lab.stop", user_id=user.id, target_id=str(lab.id), request=request
@@ -236,7 +329,10 @@ async def reset_lab(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     challenge = await db.get(Challenge, lab.challenge_id)
-    lab_cfg = _lab_settings(challenge)
+    template_ver = None
+    if getattr(challenge, "template_version_id", None):
+        template_ver = await db.get(MachineTemplateVersion, challenge.template_version_id)
+    lab_cfg = _lab_settings(challenge, template_ver)
     provider = get_lab_provider()
     ref = lab.provider_ref or lab.container_id
     if ref:
@@ -246,15 +342,20 @@ async def reset_lab(
             pass
 
     try:
+        lab.status = transition(lab.status, LabState.RESETTING).value
+        await db.commit()
         await provider.ensure_network(lab.network_name)
         await _start_container(lab, lab_cfg)
-        lab.status = "running"
+        lab.status = LabState.RUNNING.value
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
         lab.error_message = None
     except (DockerError, LabProviderError) as exc:
-        lab.status = "error"
+        try:
+            lab.status = transition(lab.status, LabState.FAILED).value
+        except Exception:
+            lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
         raise HTTPException(
@@ -262,7 +363,10 @@ async def reset_lab(
             detail=f"Lab reset failed — infrastructure unavailable: {exc}",
         ) from None
     except Exception as exc:
-        lab.status = "error"
+        try:
+            lab.status = transition(lab.status, LabState.FAILED).value
+        except Exception:
+            lab.status = "error"
         lab.error_message = str(exc)
         await db.commit()
         raise HTTPException(
@@ -274,6 +378,46 @@ async def reset_lab(
     await db.refresh(lab)
     await record_audit(
         db, event="lab.reset", user_id=user.id, target_id=str(lab.id), request=request
+    )
+    return await _to_out(db, lab)
+
+
+async def extend_lab(
+    db: AsyncSession,
+    user: CurrentUser,
+    lab: LabInstance,
+    additional_minutes: int = 30,
+    *,
+    request: Request | None = None,
+) -> LabOut:
+    if not _can_manage_lab(user, lab):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if lab.status not in (LabState.RUNNING.value, "running"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot extend lab in status '{lab.status}' (must be running)",
+        )
+    settings = get_settings()
+    now = datetime.now(UTC)
+    current_exp = lab.expires_at if lab.expires_at else now
+    if current_exp.tzinfo is None:
+        current_exp = current_exp.replace(tzinfo=UTC)
+    if now > current_exp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot extend an already expired lab. Please reset or relaunch.",
+        )
+    added = max(5, min(additional_minutes, 120))
+    new_expires = current_exp + timedelta(minutes=added)
+    created = lab.created_at.replace(tzinfo=UTC) if lab.created_at and lab.created_at.tzinfo else (lab.created_at or now).replace(tzinfo=UTC)
+    max_allowed = created + timedelta(minutes=settings.lab_max_expiry_minutes)
+    if new_expires > max_allowed:
+        new_expires = max_allowed
+    lab.expires_at = new_expires
+    await db.commit()
+    await db.refresh(lab)
+    await record_audit(
+        db, event="lab.extend", user_id=user.id, target_id=str(lab.id), request=request
     )
     return await _to_out(db, lab)
 

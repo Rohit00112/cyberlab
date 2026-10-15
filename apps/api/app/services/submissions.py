@@ -164,7 +164,18 @@ async def submit_flag(
 
     if correct:
         from app.services.badges import grant_eligible_badges
+        from app.services.scoring import record_submission_score_event
         from app.services.skill_profiles import update_profiles_for_solve
+
+        try:
+            await record_submission_score_event(
+                db,
+                user_id=user_id,
+                challenge=challenge,
+                penalty=(challenge.hint_penalty or 0) * revealed,
+            )
+        except Exception:
+            pass
 
         await update_profiles_for_solve(db, user_id=user_id, challenge=challenge)
         await db.commit()

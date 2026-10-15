@@ -4,6 +4,7 @@ Every lab instance follows a well-defined lifecycle. Transitions are
 validated at the service layer — callers must go through ``transition()``
 to change state, which guarantees only valid arcs are taken.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -39,8 +40,17 @@ _TRANSITIONS: dict[LabState, set[LabState]] = {
         LabState.FAILED,
     },
     LabState.STOPPING: {LabState.STOPPED, LabState.FAILED},
-    LabState.STOPPED: {LabState.STARTING, LabState.RESETTING, LabState.TERMINATING, LabState.TERMINATED},
-    LabState.RESETTING: {LabState.PROVISIONING, LabState.FAILED, LabState.TERMINATED},
+    LabState.STOPPED: {
+        LabState.STARTING,
+        LabState.RESETTING,
+        LabState.TERMINATING,
+        LabState.TERMINATED,
+    },
+    LabState.RESETTING: {
+        LabState.PROVISIONING,
+        LabState.FAILED,
+        LabState.TERMINATED,
+    },
     LabState.TERMINATING: {LabState.TERMINATED, LabState.FAILED},
     LabState.TERMINATED: set(),  # terminal
     LabState.FAILED: {LabState.QUEUED, LabState.TERMINATING, LabState.TERMINATED},
@@ -48,26 +58,32 @@ _TRANSITIONS: dict[LabState, set[LabState]] = {
 }
 
 #: States that count toward the user's active-instance quota.
-ACTIVE_STATES: frozenset[LabState] = frozenset({
-    LabState.QUEUED,
-    LabState.PROVISIONING,
-    LabState.STARTING,
-    LabState.RUNNING,
-})
+ACTIVE_STATES: frozenset[LabState] = frozenset(
+    {
+        LabState.QUEUED,
+        LabState.PROVISIONING,
+        LabState.STARTING,
+        LabState.RUNNING,
+    }
+)
 
 #: Terminal states — no further transitions possible.
-TERMINAL_STATES: frozenset[LabState] = frozenset({
-    LabState.TERMINATED,
-})
+TERMINAL_STATES: frozenset[LabState] = frozenset(
+    {
+        LabState.TERMINATED,
+    }
+)
 
 #: States that need infrastructure cleanup.
-CLEANUP_STATES: frozenset[LabState] = frozenset({
-    LabState.RUNNING,
-    LabState.STOPPING,
-    LabState.STOPPED,
-    LabState.FAILED,
-    LabState.EXPIRED,
-})
+CLEANUP_STATES: frozenset[LabState] = frozenset(
+    {
+        LabState.RUNNING,
+        LabState.STOPPING,
+        LabState.STOPPED,
+        LabState.FAILED,
+        LabState.EXPIRED,
+    }
+)
 
 
 class InvalidTransitionError(ValueError):

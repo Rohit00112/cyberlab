@@ -1,17 +1,17 @@
-"""Lab endpoints (Phase 2 Cyber Range, PRD §46-§51)."""
-from __future__ import annotations
-
+import asyncio
+import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
 from app.db.session import get_db
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
-from app.schemas.lab import LabAdminOut, LabListOut, LabOut
+from app.schemas.lab import LabAdminOut, LabExtendIn, LabListOut, LabOut
 from app.services import labs as lab_service
 
 router = APIRouter(tags=["labs"])
@@ -41,12 +41,76 @@ async def _get_lab(db: AsyncSession, lab_id: uuid.UUID) -> LabInstance:
 async def launch_lab(
     challenge_id: uuid.UUID,
     request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser, Depends(require_permission("lab.launch"))],
+    sync: bool = True,
 ):
     """Provision an isolated lab for this challenge (per-user network)."""
     challenge = await _get_published_challenge(db, challenge_id)
-    return await lab_service.launch_lab(db, user, challenge, request=request)
+    idempotency_key = request.headers.get("X-Idempotency-Key")
+    out = await lab_service.launch_lab(
+        db, user, challenge, sync=sync, idempotency_key=idempotency_key, request=request
+    )
+    if not sync:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return out
+
+
+@router.put("/labs/{lab_id}/extend", response_model=LabOut)
+async def extend_lab(
+    lab_id: uuid.UUID,
+    payload: LabExtendIn,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.launch"))],
+):
+    """Extend lease duration of a currently running lab."""
+    lab = await _get_lab(db, lab_id)
+    return await lab_service.extend_lab(
+        db, user, lab, additional_minutes=payload.additional_minutes, request=request
+    )
+
+
+@router.get("/labs/{lab_id}/events")
+async def lab_events(
+    lab_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser, Depends(require_permission("lab.launch"))],
+):
+    """Server-Sent Events (SSE) stream for real-time lab provisioning and status."""
+    lab = await _get_lab(db, lab_id)
+    if not lab_service._can_manage_lab(user, lab):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    async def event_generator():
+        for _ in range(60):
+            if await request.is_disconnected():
+                break
+            await db.refresh(lab)
+            current_status = lab.status
+            payload = {
+                "id": str(lab.id),
+                "status": current_status,
+                "connection_hint": lab.connection_hint,
+                "error_message": lab.error_message,
+                "expires_at": lab.expires_at.isoformat() if lab.expires_at else None,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            if current_status in ("running", "failed", "stopped", "expired", "terminated"):
+                break
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/labs", response_model=list[LabOut])

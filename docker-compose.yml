@@ -94,6 +94,28 @@ services:
     ports:
       - "8000:8000"
 
+  celery-worker:
+    build:
+      context: ./apps/api
+      target: dev
+    command: ["celery", "-A", "app.worker:celery_app", "worker", "--beat", "--loglevel=info"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab@postgres:5432/cyberlab
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+      - /app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/research:/app/data/research
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   web:
     build:
       context: ./apps/web

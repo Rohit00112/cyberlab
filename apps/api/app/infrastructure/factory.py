@@ -20,6 +20,10 @@ def _resolve_provider(provider_name: str) -> LabProvider:
         from app.infrastructure.fake import FakeLabProvider
 
         return FakeLabProvider()
+    if provider_name in ("libvirt", "kvm", "qemu"):
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        return LibvirtLabProvider()
     from app.infrastructure.docker import DockerLabProvider
 
     return DockerLabProvider()

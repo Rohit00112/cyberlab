@@ -62,3 +62,38 @@ class LabProvider(ABC):
     @abstractmethod
     async def lab_logs(self, provider_ref: str, *, tail: int = 100) -> str:
         """Return recent log output from a lab environment."""
+
+    async def reset_lab(self, provider_ref: str) -> None:
+        """Reset a lab environment to its initial state.
+        
+        Default implementation: stop then remove. Provider overrides can optimize.
+        """
+        await self.stop_lab(provider_ref)
+
+    async def readiness_check(
+        self, provider_ref: str, host: str, port: int, timeout: float = 30.0
+    ) -> bool:
+        """Check whether the exposed service on host:port is ready to accept connections."""
+        import asyncio
+        import socket
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setblocking(False)
+                await loop.sock_connect(sock, (host, port))
+                sock.close()
+                return True
+            except (OSError, TimeoutError):
+                await asyncio.sleep(0.5)
+        return False
+
+    async def get_resource_usage(self) -> dict[str, Any]:
+        """Return overall capacity and resource usage metrics for the compute node."""
+        return {
+            "status": "healthy",
+            "active_instances": 0,
+            "cpu_allocated": 0.0,
+            "memory_allocated_mb": 0,
+        }
