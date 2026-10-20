@@ -8,10 +8,11 @@ The existing IIC CyberLab project remains in `/cyberlab`. A new internal Rust se
 - `POST /v1/verify`: SHA-256 flag verification with constant-time digest comparison, compatible with the existing trimmed-flag digest format
 - `POST /v1/score`: deterministic standard, dynamic and first-blood calculations with bounded numeric inputs
 - `POST /v1/lab-transition`: validates all lab-state transition arcs against the original state machine
+- `POST /v1/authorization`: expands Keycloak realm roles into permissions and checks access using Rust RBAC rules
 
 The FastAPI integration is in `apps/api/app/core/rust_engine.py`. Production/dev Compose services use internal Docker DNS and a shared secret. Rust traffic is not exposed by a host port, and malformed or unavailable service responses cause an HTTP 503. When running FastAPI without a Rust URL, its original Python path remains available for standalone development.
 
-This is a **Rust core migration, not a full backend rewrite**. FastAPI continues to run OIDC, RBAC, ORM, transactions, provisioning, competition APIs and research exports. The Next.js UI and PostgreSQL schema remain compatible.
+This is a **Rust core migration, not a full backend rewrite**. FastAPI continues to validate Keycloak OIDC tokens and run ORM, transactions, provisioning, competition APIs and research exports; Rust evaluates role-based permissions when configured. The Next.js UI and PostgreSQL schema remain compatible.
 
 ## Verified defects corrected
 
@@ -25,10 +26,13 @@ This is a **Rust core migration, not a full backend rewrite**. FastAPI continues
 - Scoring, score-event creation, and submission persistence are now a single transaction. A scoring error rolls back the submission.
 - Lab launch, reset, and asynchronous provisioning now follow valid `provisioning → starting → running` transitions.
 - Scoring recording failures no longer disappear behind a broad exception handler.
+- Role-based permission expansion and checks in API dependencies, challenge visibility, lab administration and research ownership use Rust when the internal core is configured. The Python permission policy remains available for standalone development. Rust outages fail closed with HTTP 503.
 
 ## Verification and setup
 
 Verification on October 20, 2026: `cargo test --locked` (5 passed), `cargo fmt -- --check`, targeted Ruff lint, `uv run pytest -q` (147 passed), and `docker compose config --quiet` passed. A local Rust HTTP smoke test validated authentication, flags, scoring, and all 121 lab-state pairs. The Docker image itself has not been built or runtime-smoke-tested in this pass.
+
+Next Rust RBAC slice verification: `cargo test --locked` (8 passed), `cargo clippy --all-targets -- -D warnings`, targeted Ruff lint, authorization regression tests, and 286 Rust/Python RBAC permission-decision parity checks. The parity check is automated in GitHub Actions with `apps/security-core/tools/check_policy_parity.py`.
 
 Set `RUST_CORE_SHARED_TOKEN` to a distinct random 32+ character value in the host `.env`; Compose supplies it to the API and Rust core. The Rust service is reached internally at `http://security-core:8081`. Restart both services together after rotating this token.
 

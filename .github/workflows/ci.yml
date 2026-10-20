@@ -19,6 +19,9 @@ jobs:
           components: rustfmt
       - run: cargo fmt -- --check
       - run: cargo test --locked
+      - run: cargo build --locked
+      - name: Rust/Python RBAC policy parity
+        run: python3 ../../apps/security-core/tools/check_policy_parity.py
 
   api:
     name: API (lint + tests)

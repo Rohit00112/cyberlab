@@ -8,8 +8,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import check_permission
 from app.core.flags import hash_flag, slugify
-from app.core.permissions import has_permission
 from app.models.challenges import Challenge
 from app.models.users import User
 from app.schemas.challenge import AuthorOut, ChallengeCreate, ChallengeOut, ChallengeUpdate
@@ -18,8 +18,8 @@ from app.services.skills import sync_challenge_skills
 from app.services.users import record_audit
 
 
-def can_edit(user_roles: list[str]) -> bool:
-    return has_permission(user_roles, "challenge.edit") or has_permission(
+async def can_edit(user_roles: list[str]) -> bool:
+    return await check_permission(user_roles, "challenge.edit") or await check_permission(
         user_roles, "challenge.create"
     )
 
@@ -35,7 +35,7 @@ async def list_challenges(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[ChallengeOut], int]:
-    editor = can_edit(user_roles)
+    editor = await can_edit(user_roles)
 
     conditions = []
     if not editor:
@@ -75,11 +75,12 @@ async def get_challenge(
     challenge = await db.get(Challenge, challenge_id)
     if challenge is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
-    if not can_edit(user_roles) and not challenge.is_published:
+    editor = await can_edit(user_roles)
+    if not editor and not challenge.is_published:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
     authors = await _authors_map(db)
     counts = await revealed_counts(db, user_id, [challenge.id]) if user_id else {}
-    return _to_out(challenge, authors, editor=can_edit(user_roles), revealed_counts=counts)
+    return _to_out(challenge, authors, editor=editor, revealed_counts=counts)
 
 
 async def create_challenge(

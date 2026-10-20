@@ -291,10 +291,10 @@ async def launch_lab(
     return await _to_out(db, lab)
 
 
-def _can_manage_lab(user: CurrentUser, lab: LabInstance) -> bool:
-    from app.core.permissions import has_permission
+async def _can_manage_lab(user: CurrentUser, lab: LabInstance) -> bool:
+    from app.core.authorization import check_permission
 
-    return lab.user_id == user.id or has_permission(user.roles, "lab.admin")
+    return lab.user_id == user.id or await check_permission(user.roles, "lab.admin")
 
 
 async def stop_lab(
@@ -304,7 +304,7 @@ async def stop_lab(
     *,
     request: Request | None = None,
 ) -> LabOut:
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
     if lab.status in (LabState.RUNNING.value, "running") and ref:
@@ -334,7 +334,7 @@ async def reset_lab(
     *,
     request: Request | None = None,
 ) -> LabOut:
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     challenge = await db.get(Challenge, lab.challenge_id)
@@ -403,7 +403,7 @@ async def extend_lab(
     *,
     request: Request | None = None,
 ) -> LabOut:
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if lab.status not in (LabState.RUNNING.value, "running"):
         raise HTTPException(
@@ -444,7 +444,7 @@ async def expire_lab(
     *,
     request: Request | None = None,
 ) -> LabOut:
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
     if lab.status == "running" and ref:
@@ -651,7 +651,7 @@ async def lab_provider_status(
     lab: LabInstance,
 ) -> dict:
     """Return real-time status from the lab's infrastructure provider."""
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
     if not ref:
@@ -672,7 +672,7 @@ async def lab_provider_logs(
     tail: int = 100,
 ) -> dict:
     """Return recent logs from the lab's infrastructure provider."""
-    if not _can_manage_lab(user, lab):
+    if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
     if not ref:

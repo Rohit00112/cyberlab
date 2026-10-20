@@ -4,6 +4,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use cyberlab_security_core::authorization::{
+    authorize, AuthorizationRequest, AuthorizationResponse,
+};
 use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
@@ -68,6 +71,19 @@ async fn lab_transition(
         .map_err(|_| StatusCode::BAD_REQUEST)
 }
 
+async fn authorization(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AuthorizationRequest>,
+) -> Result<Json<AuthorizationResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    authorize(&payload)
+        .map(Json)
+        .map_err(|_| StatusCode::BAD_REQUEST)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -82,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/verify", post(verify))
         .route("/v1/score", post(calculate))
         .route("/v1/lab-transition", post(lab_transition))
+        .route("/v1/authorization", post(authorization))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(AppState {
             token: Arc::new(token),

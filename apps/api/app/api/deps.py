@@ -10,8 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import check_permission, expand_permissions
 from app.core.oidc import oidc
-from app.core.permissions import ROLE_PERMISSIONS, has_permission
 from app.db.session import get_db
 from app.services.users import sync_user
 
@@ -54,13 +54,7 @@ async def get_current_user(
         )
     roles = list(claims.get("realm_access", {}).get("roles", []))
 
-    seen: set[str] = set()
-    permissions: list[str] = []
-    for role in sorted(roles):
-        for perm in sorted(ROLE_PERMISSIONS.get(role, set())):
-            if perm not in seen:
-                seen.add(perm)
-                permissions.append(perm)
+    permissions = await expand_permissions(roles)
 
     return CurrentUser(
         id=user.id,
@@ -74,7 +68,7 @@ async def get_current_user(
 
 def require_permission(permission: str):
     async def dependency(user: Annotated[CurrentUser, Depends(get_current_user)]) -> CurrentUser:
-        if not has_permission(user.roles, permission):
+        if not await check_permission(user.roles, permission):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return user
 

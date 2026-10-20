@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
-from app.core.permissions import has_permission
+from app.core.authorization import check_permission
 from app.db.session import get_db
 from app.schemas.research import (
     DatasetCreate,
@@ -33,8 +33,8 @@ router = APIRouter(tags=["research"])
 researcher = Annotated[CurrentUser, Depends(require_permission("analytics.research"))]
 
 
-def _ensure_owner(user: CurrentUser, owner_id: uuid.UUID | None) -> None:
-    if owner_id != user.id and not has_permission(user.roles, "user.manage"):
+async def _ensure_owner(user: CurrentUser, owner_id: uuid.UUID | None) -> None:
+    if owner_id != user.id and not await check_permission(user.roles, "user.manage"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
@@ -106,7 +106,7 @@ async def delete_research_dataset(
     user: researcher,
 ):
     dataset = await research_service.get_dataset(db, dataset_id)
-    _ensure_owner(user, dataset.created_by)
+    await _ensure_owner(user, dataset.created_by)
     await research_service.delete_dataset(db, dataset)
 
 
@@ -173,7 +173,7 @@ async def update_experiment(
     data: ExperimentUpdate,
 ):
     experiment = await research_service.get_experiment(db, experiment_id)
-    _ensure_owner(user, experiment.created_by)
+    await _ensure_owner(user, experiment.created_by)
     return await research_service.update_experiment(
         db, experiment, status_value=data.status, metrics=data.metrics
     )
@@ -186,5 +186,5 @@ async def delete_experiment(
     user: researcher,
 ):
     experiment = await research_service.get_experiment(db, experiment_id)
-    _ensure_owner(user, experiment.created_by)
+    await _ensure_owner(user, experiment.created_by)
     await research_service.delete_experiment(db, experiment)

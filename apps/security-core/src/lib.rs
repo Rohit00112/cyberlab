@@ -1,4 +1,5 @@
 //! Pure, auditable security calculations. DB access and access control stay in the API.
+pub mod authorization;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;

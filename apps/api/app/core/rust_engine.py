@@ -77,3 +77,22 @@ async def can_transition_lab(current: str, target: str) -> bool:
     if type(result.get("allowed")) is not bool:
         raise HTTPException(status_code=503, detail="Invalid Rust security core response")
     return result["allowed"]
+
+
+async def authorize_roles(
+    roles: list[str], permission: str | None = None
+) -> tuple[list[str], bool | None]:
+    """Expand the role union and, optionally, evaluate an access decision."""
+    result = await _post("/v1/authorization", {"roles": roles, "permission": permission})
+    permissions = result.get("permissions") if isinstance(result, dict) else None
+    allowed = result.get("allowed") if isinstance(result, dict) else None
+    if (
+        not isinstance(permissions, list)
+        or any(not isinstance(p, str) or not p for p in permissions)
+        or len(permissions) != len(set(permissions))
+        or (allowed is not None and type(allowed) is not bool)
+        or (permission is None and allowed is not None)
+        or (permission is not None and type(allowed) is not bool)
+    ):
+        raise HTTPException(status_code=503, detail="Invalid Rust authorization response")
+    return permissions, allowed
