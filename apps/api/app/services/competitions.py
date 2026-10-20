@@ -8,12 +8,16 @@ competition's challenges, participants and time window.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.competition_transitions import (
+    TRANSITIONS,
+    decide_competition_transition,
+)
 from app.models.challenges import Challenge
 from app.models.competitions import (
     Competition,
@@ -41,13 +45,6 @@ from app.services.users import record_audit
 
 REGISTRATION_OPEN = {"registration", "scheduled"}
 CHALLENGES_EDITABLE = {"draft", "registration"}
-TRANSITIONS = {
-    "start_registration": ("draft", "registration"),
-    "schedule": ("registration", "scheduled"),
-    "start": ("scheduled", "live"),
-    "finish": ("live", "finished"),
-    "archive": ("finished", "archived"),
-}
 
 
 async def list_competitions(
@@ -157,11 +154,18 @@ async def transition(
     user: User,
     request: Request | None = None,
 ) -> CompetitionOut:
-    allowed = TRANSITIONS.get(action)
-    if allowed is None:
+    now = datetime.now(UTC)
+    to_status, error_code = await decide_competition_transition(
+        competition.status,
+        action,
+        start_at=competition.start_at,
+        end_at=competition.end_at,
+        now=now,
+    )
+    if error_code == "unknown_action":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown transition")
-    from_status, to_status = allowed
-    if competition.status != from_status:
+    if error_code == "invalid_transition":
+        from_status, _ = TRANSITIONS[action]
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -169,21 +173,18 @@ async def transition(
                 f"expected '{from_status}'."
             ),
         )
-    now = datetime.now(UTC)
-    starts = competition.start_at
-    if action == "start" and starts and starts.replace(tzinfo=UTC) > now + timedelta(minutes=5):
+    if error_code == "too_early":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Competition cannot start before its scheduled start time.",
         )
-    if action == "schedule" and not (competition.start_at and competition.end_at):
+    if error_code == "missing_schedule":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Set start_at and end_at before scheduling.",
         )
-    if action == "finish" and competition.end_at and competition.end_at.replace(tzinfo=UTC) > now:
-        # Allowed: organizer may finish early, but be explicit about it.
-        pass
+    assert to_status is not None
+    from_status = competition.status
     competition.status = to_status
     await db.commit()
     await db.refresh(competition)
@@ -664,8 +665,12 @@ async def auto_transition_competitions(db: AsyncSession) -> int:
         )
     ).all()
     for competition in scheduled:
-        if competition.start_at and now >= competition.start_at.replace(tzinfo=UTC):
-            competition.status = "live"
+        next_status, _ = await decide_competition_transition(
+            competition.status, "auto",
+            start_at=competition.start_at, end_at=competition.end_at, now=now,
+        )
+        if next_status is not None:
+            competition.status = next_status
             changed += 1
 
     # live → finished when end_at has passed
@@ -675,8 +680,12 @@ async def auto_transition_competitions(db: AsyncSession) -> int:
         )
     ).all()
     for competition in live:
-        if competition.end_at and now >= competition.end_at.replace(tzinfo=UTC):
-            competition.status = "finished"
+        next_status, _ = await decide_competition_transition(
+            competition.status, "auto",
+            start_at=competition.start_at, end_at=competition.end_at, now=now,
+        )
+        if next_status is not None:
+            competition.status = next_status
             changed += 1
             # Grant badges to all participants on finish
             from app.services.badges import grant_eligible_badges

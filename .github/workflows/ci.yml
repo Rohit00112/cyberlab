@@ -22,6 +22,8 @@ jobs:
       - run: cargo build --locked
       - name: Rust/Python RBAC policy parity
         run: python3 ../../apps/security-core/tools/check_policy_parity.py
+      - name: Rust/Python competition transition parity
+        run: python3 tools/check_competition_parity.py
 
   api:
     name: API (lint + tests)

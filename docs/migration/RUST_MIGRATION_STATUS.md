@@ -9,6 +9,7 @@ The existing IIC CyberLab project remains in `/cyberlab`. A new internal Rust se
 - `POST /v1/score`: deterministic standard, dynamic and first-blood calculations with bounded numeric inputs
 - `POST /v1/lab-transition`: validates all lab-state transition arcs against the original state machine
 - `POST /v1/authorization`: expands Keycloak realm roles into permissions and checks access using Rust RBAC rules
+- `POST /v1/competition-transition`: validates organizer actions and time-based competition lifecycle changes in Rust
 
 The FastAPI integration is in `apps/api/app/core/rust_engine.py`. Production/dev Compose services use internal Docker DNS and a shared secret. Rust traffic is not exposed by a host port, and malformed or unavailable service responses cause an HTTP 503. When running FastAPI without a Rust URL, its original Python path remains available for standalone development.
 
@@ -34,8 +35,10 @@ Verification on October 20, 2026: `cargo test --locked` (5 passed), `cargo fmt -
 
 Next Rust RBAC slice verification: `cargo test --locked` (8 passed), `cargo clippy --all-targets -- -D warnings`, targeted Ruff lint, authorization regression tests, and 286 Rust/Python RBAC permission-decision parity checks. The parity check is automated in GitHub Actions with `apps/security-core/tools/check_policy_parity.py`.
 
+Competition lifecycle slice: organizer transitions and scheduled start/finish decisions now use Rust when configured, while FastAPI retains database transactions, audit events and badge awards. Checks included 12 Rust tests, 12 new database/policy Python tests, 164 backend tests overall, and 378 live Rust/Python competition decisions across action and time boundaries. The parity check runs in CI through `apps/security-core/tools/check_competition_parity.py`. Repository-wide Ruff lint was also corrected and passed.
+
 Set `RUST_CORE_SHARED_TOKEN` to a distinct random 32+ character value in the host `.env`; Compose supplies it to the API and Rust core. The Rust service is reached internally at `http://security-core:8081`. Restart both services together after rotating this token.
 
 ## Remaining work
 
-The rest of FastAPI is still Python. A complete migration requires Rust implementations for identity validation, challenge CRUD, transactions, lab/VM provisioning, competition state changes, research APIs, and operations; API contract tests and production cutover must precede removal of Python services. Production container integration and browser-based end-to-end tests remain outstanding. The existing October 15 gap documents describe an earlier state and must be refreshed against current endpoints, since some listed missing modules now exist.
+The rest of FastAPI is still Python. A complete migration requires Rust implementations for identity validation, challenge CRUD, database transactions, lab/VM provisioning, competition persistence and leaderboards, research APIs, and operations; API contract tests and production cutover must precede removal of Python services. Production container integration and browser-based end-to-end tests remain outstanding. The existing October 15 gap documents describe an earlier state and must be refreshed against current endpoints, since some listed missing modules now exist.

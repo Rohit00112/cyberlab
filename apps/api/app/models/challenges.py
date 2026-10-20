@@ -31,7 +31,10 @@ class Challenge(Base):
     environment_type: Mapped[str] = mapped_column(String(32), default="none", nullable=False)
     lab_config: Mapped[dict | None] = mapped_column(JSON)
     template_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("machine_template_versions.id", ondelete="SET NULL"), nullable=True, index=True
+        Uuid,
+        ForeignKey("machine_template_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     author_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), index=True

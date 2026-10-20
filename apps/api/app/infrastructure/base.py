@@ -71,7 +71,7 @@ class LabProvider(ABC):
         await self.stop_lab(provider_ref)
 
     async def readiness_check(
-        self, provider_ref: str, host: str, port: int, timeout: float = 30.0
+        self, provider_ref: str, host: str, port: int, timeout: float = 30.0  # noqa: ASYNC109
     ) -> bool:
         """Check whether the exposed service on host:port is ready to accept connections."""
         import asyncio

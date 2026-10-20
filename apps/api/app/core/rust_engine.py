@@ -96,3 +96,44 @@ async def authorize_roles(
     ):
         raise HTTPException(status_code=503, detail="Invalid Rust authorization response")
     return permissions, allowed
+
+
+async def competition_transition(
+    current: str,
+    action: str,
+    *,
+    start_at: int | None,
+    end_at: int | None,
+    now: int,
+) -> tuple[str | None, str | None]:
+    """Evaluate a competition state change using Rust's time-aware rules."""
+    result = await _post(
+        "/v1/competition-transition",
+        {
+            "current": current,
+            "action": action,
+            "start_at": start_at,
+            "end_at": end_at,
+            "now": now,
+        },
+    )
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    next_status = result.get("next_status")
+    error_code = result.get("error_code")
+    known_statuses = {
+        "draft", "registration", "scheduled", "live", "finished", "archived",
+    }
+    known_errors = {
+        "unknown_action", "invalid_transition", "missing_schedule", "too_early",
+    }
+    if (
+        next_status is not None
+        and (not isinstance(next_status, str) or next_status not in known_statuses)
+        or error_code is not None
+        and (not isinstance(error_code, str) or error_code not in known_errors)
+        or next_status is not None and error_code is not None
+        or next_status is None and error_code is None and action != "auto"
+    ):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    return next_status, error_code
