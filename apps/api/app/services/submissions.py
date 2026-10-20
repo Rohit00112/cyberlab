@@ -290,6 +290,7 @@ async def leaderboard(db: AsyncSession, *, limit: int = 50) -> list[LeaderboardE
             .order_by(
                 func.coalesce(func.sum(Submission.earned_points), 0).desc(),
                 func.min(Submission.created_at).asc(),
+                User.id.asc(),
             )
             .limit(limit)
         )

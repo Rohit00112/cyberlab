@@ -45,6 +45,17 @@ PostgreSQL catalog slice: Rust now queries challenge IDs and totals through a re
 
 Global leaderboard slice: Rust now aggregates correct submissions and rank ordering with a bounded query; FastAPI retains the public leaderboard route and its permission dependency. Challenge catalog pagination also gained a deterministic ID tie-break, and challenge creation/updates reject direct publication to enforce the dedicated publish workflow. The full Rust-mode HTTP+PostgreSQL leaderboard parity and production image checks remain to be completed.
 
+October 20 integration verification: `apps/api/tests/test_rust_live_database.py` adds an opt-in end-to-end Rust/PostgreSQL parity check that creates a unique temporary database, seeds users, correct and incorrect submissions plus draft/published challenges, runs the real Rust binary over loopback HTTP, and checks Python/Rust leaderboard results, challenge page IDs/counts, publication visibility and API responses. It also verifies that unauthenticated calls and invalid limits are rejected. The temporary database is dropped at the end, without changing `cyberlab` or `cyberlab_test`. To run locally:
+
+```bash
+cd apps/security-core
+CARGO_TARGET_DIR=/tmp/cyberlab-rust-parity-target cargo build --locked
+cd ../api
+RUN_RUST_DB_INTEGRATION=1 RUST_CORE_TEST_BINARY=/tmp/cyberlab-rust-parity-target/debug/cyberlab-security-core uv run pytest -q tests/test_rust_live_database.py
+```
+
+This test is opt-in to avoid assuming every CI job has a compiled Rust binary and database creation privileges. Python leaderboard ranking now uses a deterministic user-ID tie-break matching the Rust query. Full production image and browser validation remain outstanding.
+
 ## Remaining work
 
 The rest of FastAPI is still Python. A complete migration requires Rust implementations for identity validation, challenge CRUD, database transactions, lab/VM provisioning, competition persistence and leaderboards, research APIs, and operations; API contract tests and production cutover must precede removal of Python services. Production container integration and browser-based end-to-end tests remain outstanding. The existing October 15 gap documents describe an earlier state and must be refreshed against current endpoints, since some listed missing modules now exist.
