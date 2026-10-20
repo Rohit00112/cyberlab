@@ -21,7 +21,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
-    command: ["start", "--proxy-headers=xforwarded"]
+    command: ["start", "--proxy-headers=xforwarded", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
@@ -56,8 +56,8 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
       RUST_CORE_URL: http://security-core:8081
       RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
-    volumes:
-      # Docker socket for lab orchestration (API is internal-only in prod).
+    volumes: !override
+      # Docker socket remains a separate hardening gap; do not break provisioning here.
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data/research:/app/data/research
     depends_on:
@@ -74,6 +74,7 @@ services:
     build:
       context: ./apps/web
       target: prod
+    command: !override ["node", "server.js"]
     environment:
       NEXT_PUBLIC_API_BASE: https://cyberlab.example.org/api/v1
       NEXT_PUBLIC_KEYCLOAK_ISSUER: https://auth.example.org/realms/cyberlab
@@ -84,6 +85,7 @@ services:
       CI: "true"
     depends_on:
       - api
+    volumes: !override []
     restart: unless-stopped
     ports: !override []
 

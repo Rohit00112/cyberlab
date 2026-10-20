@@ -1,8 +1,4 @@
-{
-	# Production reverse proxy (TLS terminated here; only the browser-facing surface is exposed).
-	admin example.org
-}
-
+# Production reverse proxy (TLS terminated here; only the browser-facing surface is exposed).
 # Student-facing web + API on one origin; the API is NOT published directly.
 cyberlab.example.org {
 	handle /api/* {

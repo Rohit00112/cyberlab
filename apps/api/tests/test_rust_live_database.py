@@ -133,14 +133,14 @@ async def live_rust_database():
                 if server.returncode is not None:
                     pytest.fail("Rust process exited before serving requests")
                 try:
-                    response = await client.get(f"{rust_url}/health")
+                    response = await client.get(f"{rust_url}/ready")
                     if response.status_code == 200:
                         break
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(0.1)
             else:
-                pytest.fail("Rust service health endpoint never became ready")
+                pytest.fail("Rust service database readiness endpoint never became ready")
 
         yield SimpleNamespace(
             factory=factory, rust_url=rust_url, token=token,
@@ -245,6 +245,10 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             assert challenges_response.json()[0]["id"] != str(c3)
 
         async with httpx.AsyncClient(timeout=2) as client:
+            health = await client.get(f"{ctx.rust_url}/health")
+            assert health.status_code == 200
+            ready = await client.get(f"{ctx.rust_url}/ready")
+            assert ready.status_code == 200
             # Internal endpoints are never anonymous.
             missing_token = await client.post(
                 f"{ctx.rust_url}/v1/leaderboard", json={"limit": 10}

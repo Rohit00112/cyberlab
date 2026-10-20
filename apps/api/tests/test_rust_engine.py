@@ -18,6 +18,27 @@ from app.services.submissions import submit_flag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "http://security-core:4444",
+    "http://security-core",
+    "http://localhost",
+    "http://example.com:8081",
+    "http://security-core:8081@other.example:8081",
+    "http://security-core:notaport",
+])
+async def test_rust_adapter_rejects_untrusted_destinations(monkeypatch, url):
+    monkeypatch.setattr(
+        rust_engine, "get_settings",
+        lambda: SimpleNamespace(rust_core_url=url, rust_core_shared_token="t" * 40),
+    )
+    with patch.object(rust_engine.httpx, "AsyncClient") as client:
+        with pytest.raises(HTTPException) as error:
+            await rust_engine._post("/v1/verify", {"candidate": "secret"})
+        assert error.value.status_code == 503
+        client.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_verify_accepts_explicit_boolean_only():
     with patch.object(rust_engine, "_post", new=AsyncMock(return_value={"correct": True})):
         assert await rust_engine.verify_flag("IIC{x}", "0" * 64)

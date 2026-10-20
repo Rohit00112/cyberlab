@@ -63,6 +63,16 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab@localhost:5432/cyberlab
         run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=50
+      - name: Build Rust binary for live API/DB parity
+        uses: dtolnay/rust-toolchain@stable
+      - name: Compile Rust integration target
+        run: cargo build --locked --manifest-path ../security-core/Cargo.toml
+      - name: Live Rust/PostgreSQL/API parity (isolated database)
+        env:
+          DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab@localhost:5432/cyberlab
+          RUST_CORE_URL: ""
+          RUN_RUST_DB_INTEGRATION: "1"
+        run: uv run pytest -q tests/test_rust_live_database.py
 
   web:
     name: Web (lint + types + build)
@@ -74,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.17.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22

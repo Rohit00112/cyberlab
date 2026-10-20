@@ -18,7 +18,7 @@ use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
 };
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
@@ -38,6 +38,30 @@ fn authorized(headers: &HeaderMap, state: &AppState) -> bool {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status":"ok","service":"cyberlab-security-core"}))
+}
+
+// Liveness is independent of PostgreSQL, but callers must not be routed to
+// catalog/leaderboard handlers until their backing database is reachable.
+async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let check = async {
+        let client = pool
+            .get()
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        client
+            .simple_query("SELECT 1")
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        Ok::<(), StatusCode>(())
+    };
+    tokio::time::timeout(Duration::from_secs(2), check)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)??;
+    Ok(Json(serde_json::json!({"status":"ready"})))
 }
 
 async fn verify(
@@ -166,6 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/v1/verify", post(verify))
         .route("/v1/score", post(calculate))
         .route("/v1/lab-transition", post(lab_transition))

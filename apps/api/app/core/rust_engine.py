@@ -18,10 +18,16 @@ async def _post(path: str, payload: dict) -> dict:
     settings = get_settings()
     if not settings.rust_core_url or len(settings.rust_core_shared_token) < 32:
         raise HTTPException(status_code=503, detail="Rust security core is not configured")
-    endpoint = urlsplit(settings.rust_core_url)
+    try:
+        endpoint = urlsplit(settings.rust_core_url)
+        port = endpoint.port
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Invalid Rust security core endpoint") from exc
     if (
         endpoint.scheme != "http"
         or endpoint.hostname not in {"security-core", "127.0.0.1", "localhost"}
+        or (endpoint.hostname == "security-core" and port != 8081)
+        or (endpoint.hostname != "security-core" and port is None)
         or endpoint.username
         or endpoint.password
         or endpoint.path not in ("", "/")
