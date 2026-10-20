@@ -11,6 +11,9 @@ use cyberlab_security_core::catalog::{query_catalog, CatalogError, CatalogPage, 
 use cyberlab_security_core::competition::{
     transition_competition, CompetitionTransitionRequest, CompetitionTransitionResponse,
 };
+use cyberlab_security_core::leaderboard::{
+    global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
+};
 use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
@@ -121,6 +124,25 @@ async fn challenge_catalog(
     }
 }
 
+async fn leaderboard(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<LeaderboardQuery>,
+) -> Result<Json<Vec<LeaderboardRow>>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match global_leaderboard(pool, &payload).await {
+        Ok(rows) => Ok(Json(rows)),
+        Err(LeaderboardError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(LeaderboardError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -150,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))
         .route("/v1/catalog/query", post(challenge_catalog))
+        .route("/v1/leaderboard", post(leaderboard))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(AppState {
             token: Arc::new(token),

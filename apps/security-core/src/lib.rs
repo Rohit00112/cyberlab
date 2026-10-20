@@ -2,6 +2,7 @@
 pub mod authorization;
 pub mod catalog;
 pub mod competition;
+pub mod leaderboard;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;

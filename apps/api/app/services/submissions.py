@@ -271,6 +271,10 @@ async def user_stats(db: AsyncSession, user_id: uuid.UUID) -> UserStats:
 
 
 async def leaderboard(db: AsyncSession, *, limit: int = 50) -> list[LeaderboardEntry]:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import global_leaderboard
+
+        return [LeaderboardEntry.model_validate(row) for row in await global_leaderboard(limit)]
     rows = (
         await db.execute(
             select(

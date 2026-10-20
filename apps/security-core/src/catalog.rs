@@ -92,7 +92,7 @@ pub async fn query_catalog(
     let rows = transaction
         .query(
             &format!(
-                "SELECT id::text {filters} ORDER BY points DESC, created_at DESC LIMIT $5 OFFSET $6"
+                "SELECT id::text {filters} ORDER BY points DESC, created_at DESC, id ASC LIMIT $5 OFFSET $6"
             ),
             &[
                 &request.editor,

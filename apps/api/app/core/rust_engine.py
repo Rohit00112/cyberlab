@@ -167,3 +167,29 @@ async def catalog_page(
     if len(set(parsed)) != len(parsed):
         raise HTTPException(status_code=503, detail="Duplicate Rust catalog IDs")
     return parsed, total
+
+
+async def global_leaderboard(limit: int) -> list[dict]:
+    import uuid
+
+    result = await _post("/v1/leaderboard", {"limit": limit})
+    if not isinstance(result, list) or len(result) > limit:
+        raise HTTPException(status_code=503, detail="Invalid Rust leaderboard response")
+    for rank, row in enumerate(result, start=1):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("rank")) is not int
+            or row["rank"] != rank
+            or type(row.get("points")) is not int
+            or type(row.get("solved_count")) is not int
+            or row["solved_count"] < 1
+            or row["points"] < 0
+            or row.get("display_name") is not None
+            and not isinstance(row["display_name"], str)
+        ):
+            raise HTTPException(status_code=503, detail="Invalid Rust leaderboard response")
+        try:
+            uuid.UUID(row["user_id"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=503, detail="Invalid Rust leaderboard ID") from exc
+    return result

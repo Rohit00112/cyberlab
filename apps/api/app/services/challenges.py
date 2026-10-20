@@ -79,13 +79,13 @@ async def list_challenges(
             await db.scalars(
                 select(Challenge)
                 .where(*conditions)
-                .order_by(Challenge.points.desc(), Challenge.created_at.desc())
+            .order_by(Challenge.points.desc(), Challenge.created_at.desc(), Challenge.id.asc())
                 .limit(limit)
                 .offset(offset)
             )
         ).all()
 
-    authors = await _authors_map(db)
+    authors = await _authors_map(db, {c.author_id for c in challenges if c.author_id})
     counts = await revealed_counts(db, user_id, [c.id for c in challenges]) if user_id else {}
     result = [_to_out(c, authors, editor=editor, revealed_counts=counts) for c in challenges]
     return result, int(total or 0)
@@ -104,7 +104,7 @@ async def get_challenge(
     editor = await can_edit(user_roles)
     if not editor and not challenge.is_published:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
-    authors = await _authors_map(db)
+    authors = await _authors_map(db, {challenge.author_id} if challenge.author_id else set())
     counts = await revealed_counts(db, user_id, [challenge.id]) if user_id else {}
     return _to_out(challenge, authors, editor=editor, revealed_counts=counts)
 
@@ -112,6 +112,8 @@ async def get_challenge(
 async def create_challenge(
     db: AsyncSession, data: ChallengeCreate, author_id: uuid.UUID, request: Any = None
 ) -> ChallengeOut:
+    if data.status != "draft":
+        raise HTTPException(status_code=400, detail="Create challenges as drafts; use publish")
     slug = slugify(data.title)
     existing = await db.scalar(select(Challenge).where(Challenge.slug == slug))
     if existing:
@@ -155,6 +157,10 @@ async def update_challenge(
     request: Any = None,
 ) -> ChallengeOut:
     updates = data.model_dump(exclude_unset=True)
+    if "status" in updates:
+        raise HTTPException(status_code=400, detail="Use the dedicated publish action")
+    if challenge.status == "published" and updates.get("flag") is None and "flag" in updates:
+        raise HTTPException(status_code=400, detail="Published challenges require a flag")
     if "flag" in updates:
         flag = updates.pop("flag")
         if flag is None:
@@ -207,8 +213,15 @@ async def delete_challenge(
     )
 
 
-async def _authors_map(db: AsyncSession) -> dict[str, Any]:
-    rows = (await db.execute(select(User.id, User.display_name))).all()
+async def _authors_map(
+    db: AsyncSession, author_ids: set[uuid.UUID] | None = None
+) -> dict[str, Any]:
+    if author_ids is not None and not author_ids:
+        return {}
+    stmt = select(User.id, User.display_name)
+    if author_ids is not None:
+        stmt = stmt.where(User.id.in_(author_ids))
+    rows = (await db.execute(stmt)).all()
     return {str(row[0]): row[1] for row in rows}
 
 

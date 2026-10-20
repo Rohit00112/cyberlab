@@ -299,3 +299,34 @@ def test_hash_flag():
     assert isinstance(h, str)
     assert len(h) == 64
     assert h == hash_flag("  IIC{test}  ")
+
+
+@pytest.mark.asyncio
+async def test_create_cannot_bypass_publish_workflow(faculty_client):
+    client, _ = faculty_client
+    response = await client.post(
+        "/api/v1/challenges",
+        json={
+            "title": "Unauthorized Published Challenge",
+            "description": "Private until published",
+            "category": "Linux",
+            "difficulty": "beginner",
+            "status": "published",
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_edit_cannot_set_public_status(faculty_client, test_db):
+    client, _ = faculty_client
+    challenge = await _seed_challenge(
+        test_db, slug=f"draft-publish-{uuid.uuid4().hex}", status="draft"
+    )
+    response = await client.patch(
+        f"/api/v1/challenges/{challenge.id}", json={"status": "published"}
+    )
+    assert response.status_code == 400
+    async with test_db() as db:
+        stored = await db.get(Challenge, challenge.id)
+        assert stored.status == "draft"
