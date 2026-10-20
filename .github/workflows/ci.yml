@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  security-core:
+    name: Rust security core
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/security-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt -- --check
+      - run: cargo test --locked
+
   api:
     name: API (lint + tests)
     runs-on: ubuntu-latest

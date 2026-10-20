@@ -50,6 +50,8 @@ services:
       OIDC_WELL_KNOWN_URL: https://auth.example.org/realms/cyberlab/.well-known/openid-configuration
       OIDC_CLIENT_ID: api
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      RUST_CORE_URL: http://security-core:8081
+      RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
     volumes:
       # Docker socket for lab orchestration (API is internal-only in prod).
       - /var/run/docker.sock:/var/run/docker.sock
@@ -80,6 +82,21 @@ services:
       - api
     restart: unless-stopped
     ports: !override []
+
+  celery-worker:
+    build:
+      context: ./apps/api
+      target: prod
+    command: ["celery", "-A", "app.worker:celery_app", "worker", "--beat", "--loglevel=info"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cyberlab
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/research:/app/data/research
+    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine

@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, hash_flag
-from app.core.states import ACTIVE_STATES, LabState, transition
+from app.core.lab_transitions import transition_lab
+from app.core.states import ACTIVE_STATES, LabState
 from app.infrastructure import docker as docker_adapter
 from app.infrastructure.base import LabProvider, LabProviderError
 from app.infrastructure.docker import DockerError
@@ -224,11 +225,17 @@ async def launch_lab(
             await db.commit()
         except Exception:
             import asyncio
+
             from app.tasks.provisioning import execute_provisioning_job
+
             asyncio.create_task(execute_provisioning_job(str(job.id)))
 
         await record_audit(
-            db, event="lab.launch_queued", user_id=user.id, target_id=challenge.slug, request=request
+            db,
+            event="lab.launch_queued",
+            user_id=user.id,
+            target_id=challenge.slug,
+            request=request,
         )
         return await _to_out(db, lab, job_id=job.id)
 
@@ -246,14 +253,16 @@ async def launch_lab(
     try:
         provider = get_lab_provider()
         await provider.ensure_network(lab.network_name)
+        lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
+        await db.commit()
         await _start_container(lab, lab_cfg)
-        lab.status = transition(lab.status, LabState.RUNNING).value
+        lab.status = (await transition_lab(lab.status, LabState.RUNNING)).value
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
     except (DockerError, LabProviderError) as exc:
         try:
-            lab.status = transition(lab.status, LabState.FAILED).value
+            lab.status = (await transition_lab(lab.status, LabState.FAILED)).value
         except Exception:
             lab.status = "error"
         lab.error_message = str(exc)
@@ -264,7 +273,7 @@ async def launch_lab(
         ) from None
     except Exception as exc:
         try:
-            lab.status = transition(lab.status, LabState.FAILED).value
+            lab.status = (await transition_lab(lab.status, LabState.FAILED)).value
         except Exception:
             lab.status = "error"
         lab.error_message = str(exc)
@@ -300,7 +309,7 @@ async def stop_lab(
     ref = lab.provider_ref or lab.container_id
     if lab.status in (LabState.RUNNING.value, "running") and ref:
         try:
-            lab.status = transition(lab.status, LabState.STOPPING).value
+            lab.status = (await transition_lab(lab.status, LabState.STOPPING)).value
             await db.commit()
             await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError) as exc:
@@ -308,7 +317,7 @@ async def stop_lab(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
             ) from None
     try:
-        lab.status = transition(lab.status, LabState.STOPPED).value
+        lab.status = (await transition_lab(lab.status, LabState.STOPPED)).value
     except Exception:
         lab.status = "stopped"
     await db.commit()
@@ -342,18 +351,22 @@ async def reset_lab(
             pass
 
     try:
-        lab.status = transition(lab.status, LabState.RESETTING).value
+        lab.status = (await transition_lab(lab.status, LabState.RESETTING)).value
+        await db.commit()
+        lab.status = (await transition_lab(lab.status, LabState.PROVISIONING)).value
         await db.commit()
         await provider.ensure_network(lab.network_name)
+        lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
+        await db.commit()
         await _start_container(lab, lab_cfg)
-        lab.status = LabState.RUNNING.value
+        lab.status = (await transition_lab(lab.status, LabState.RUNNING)).value
         lab.expires_at = datetime.now(UTC) + timedelta(
             minutes=lab_cfg["expiry_minutes"]
         )
         lab.error_message = None
     except (DockerError, LabProviderError) as exc:
         try:
-            lab.status = transition(lab.status, LabState.FAILED).value
+            lab.status = (await transition_lab(lab.status, LabState.FAILED)).value
         except Exception:
             lab.status = "error"
         lab.error_message = str(exc)
@@ -364,7 +377,7 @@ async def reset_lab(
         ) from None
     except Exception as exc:
         try:
-            lab.status = transition(lab.status, LabState.FAILED).value
+            lab.status = (await transition_lab(lab.status, LabState.FAILED)).value
         except Exception:
             lab.status = "error"
         lab.error_message = str(exc)
@@ -409,7 +422,9 @@ async def extend_lab(
         )
     added = max(5, min(additional_minutes, 120))
     new_expires = current_exp + timedelta(minutes=added)
-    created = lab.created_at.replace(tzinfo=UTC) if lab.created_at and lab.created_at.tzinfo else (lab.created_at or now).replace(tzinfo=UTC)
+    created = lab.created_at or now
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
     max_allowed = created + timedelta(minutes=settings.lab_max_expiry_minutes)
     if new_expires > max_allowed:
         new_expires = max_allowed

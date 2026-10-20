@@ -11,10 +11,11 @@ Source of truth: [`IIC_CyberLab_Proposal_PRD.md`](./IIC_CyberLab_Proposal_PRD.md
 | Layer | Technology |
 |---|---|
 | Web | Next.js (App Router), React, TypeScript, Tailwind, shadcn/ui |
-| API | Python, FastAPI, Pydantic v2, SQLAlchemy 2 (async), Alembic |
+| API | Rust security core (flag verification/scoring) + Python FastAPI orchestration and API compatibility |
 | Data | PostgreSQL 16, Redis 7 |
 | Identity | Keycloak (OIDC, realm `cyberlab`) |
 | Labs | Docker (Phase 2+, via `LabProvider` abstraction) |
+| Security core | Rust, Axum, SHA-256, constant-time flag verification |
 
 ## Getting started
 

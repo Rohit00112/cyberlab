@@ -4,57 +4,60 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, Uuid, text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
 
 class VPNPeer(Base):
-    """WireGuard VPN peer configuration for a user or team."""
+    """WireGuard VPN peer (matches the existing Alembic schema)."""
 
     __tablename__ = "vpn_peers"
     __table_args__ = (
-        Index("ix_vpn_peers_user", "user_id"),
+        Index("ix_vpn_peers_user_id", "user_id"),
+        Index("ix_vpn_peers_public_key", "public_key", unique=True),
+        Index("ix_vpn_peers_allocated_ip", "allocated_ip", unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    team_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("teams.id", ondelete="SET NULL")
-    )
-
     # WireGuard keys (public key only — private key never stored server-side)
-    public_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    public_key: Mapped[str] = mapped_column(String(64), nullable=False)
     preshared_key_hash: Mapped[str | None] = mapped_column(String(128))
 
     # Assigned addressing
-    assigned_ip: Mapped[str] = mapped_column(String(64), nullable=False)
-    allowed_ips: Mapped[str] = mapped_column(String(512), nullable=False)
-
-    # Network scope — which lab networks this peer can reach
-    lab_instance_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("lab_instances.id", ondelete="SET NULL")
-    )
+    allocated_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    allowed_subnets: Mapped[list[str] | None] = mapped_column(JSON)
 
     # Lifecycle
-    status: Mapped[str] = mapped_column(
-        String(16), default="active", nullable=False
-    )  # active | revoked | expired
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    # Config download tracking
-    config_downloaded: Mapped[bool] = mapped_column(default=False, nullable=False)
-    last_handshake: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    handshake_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tx_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
+    rx_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("now()"), onupdate=text("now()")
     )
 
 
@@ -67,38 +70,33 @@ class ScoreEvent(Base):
 
     __tablename__ = "score_events"
     __table_args__ = (
-        Index("ix_score_events_user_challenge", "user_id", "challenge_id"),
-        Index("ix_score_events_competition", "competition_id"),
+        Index("ix_score_events_user_id", "user_id"),
+        Index("ix_score_events_competition_id", "competition_id"),
+        Index("ix_score_events_recorded_at", "recorded_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    challenge_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("challenges.id", ondelete="CASCADE"), nullable=False
+    challenge_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("challenges.id", ondelete="SET NULL")
     )
     competition_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("competitions.id", ondelete="SET NULL")
     )
-    submission_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("submissions.id", ondelete="SET NULL")
-    )
-
     # Scoring details
     event_type: Mapped[str] = mapped_column(
         String(32), nullable=False
     )  # solve | first_blood | hint_penalty | bonus | adjustment
-    base_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    modifier: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
-    final_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
-    # Dynamic scoring context
-    solve_count_at_time: Mapped[int | None] = mapped_column(Integer)
-    decay_factor: Mapped[float | None] = mapped_column(Float)
-
-    reason: Mapped[str | None] = mapped_column(Text)
-
-    created_at: Mapped[datetime] = mapped_column(
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_first_blood: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    is_frozen: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )

@@ -1,0 +1,16 @@
+[package]
+name = "cyberlab-security-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Internal Rust flag verification and scoring service for IIC CyberLab"
+
+[dependencies]
+axum = "0.8"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+serde_json = "1"
+

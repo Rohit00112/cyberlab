@@ -5,6 +5,7 @@ Never store a plaintext flag in the database or in API responses.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import secrets
 
@@ -35,7 +36,7 @@ def hash_flag(flag: str) -> str:
 
 
 def verify_flag(candidate: str, expected_hash: str) -> bool:
-    return hash_flag(candidate) == expected_hash
+    return hmac.compare_digest(hash_flag(candidate), expected_hash)
 
 
 def generate_lab_flag() -> str:

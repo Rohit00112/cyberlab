@@ -8,7 +8,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.core.flags import generate_lab_flag, hash_flag
-from app.core.states import LabState, transition
+from app.core.lab_transitions import transition_lab
+from app.core.states import LabState
 from app.db.base import SessionLocal
 from app.infrastructure.factory import get_lab_provider
 from app.models.challenges import Challenge
@@ -39,12 +40,8 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
         job.status = "running"
         job.started_at = datetime.now(UTC)
         try:
-            lab.status = transition(lab.status, LabState.PROVISIONING).value
-        except Exception:
-            lab.status = LabState.PROVISIONING.value
-        await db.commit()
-
-        try:
+            lab.status = (await transition_lab(lab.status, LabState.PROVISIONING)).value
+            await db.commit()
             cfg = job.config or {}
             flag_path = cfg.get("flag_path", "/flag.txt")
             image = cfg.get("image", "alpine:3.20")
@@ -53,6 +50,8 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             # Start container via provider
             provider = get_lab_provider(lab.provider)
             await provider.ensure_network(lab.network_name)
+            lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
+            await db.commit()
 
             flag = generate_lab_flag()
             cmd = ["/bin/sh", "-c", f"printf '%s\\n' '{flag}' > {flag_path} && sleep infinity"]
@@ -71,7 +70,7 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
                 f"Target {container_name} is running at {ip} on network {lab.network_name}. "
                 f"Flag location: {flag_path}. Lease valid for {expiry_minutes} minutes."
             )
-            lab.status = LabState.RUNNING.value
+            lab.status = (await transition_lab(lab.status, LabState.RUNNING)).value
             lab.expires_at = datetime.now(UTC) + timedelta(minutes=expiry_minutes)
 
             job.status = "completed"

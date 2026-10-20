@@ -10,7 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.flags import verify_flag
+from app.core.rust_engine import verify_flag as rust_verify_flag
 from app.models.challenges import Challenge
 from app.models.hint_reveals import HintReveal
 from app.models.labs import LabInstance
@@ -94,7 +96,11 @@ async def submit_flag(
     expected_hash = await _expected_flag_hash(
         db, user_id=user_id, challenge=challenge, lab_id=lab_id
     )
-    correct = verify_flag(flag, expected_hash)
+    correct = (
+        await rust_verify_flag(flag, expected_hash)
+        if get_settings().rust_core_url
+        else verify_flag(flag, expected_hash)
+    )
 
     if correct:
         existing = await db.scalar(
@@ -137,10 +143,37 @@ async def submit_flag(
     )
     db.add(submission)
     try:
+        await db.flush()
+        if correct:
+            from app.services.scoring import record_submission_score_event
+            from app.services.skill_profiles import update_profiles_for_solve
+
+            score_event = await record_submission_score_event(
+                db,
+                user_id=user_id,
+                challenge=challenge,
+                penalty=(challenge.hint_penalty or 0) * revealed,
+            )
+            # A single score is the source of truth for events and leaderboard.
+            submission.earned_points = score_event.points
+            await update_profiles_for_solve(db, user_id=user_id, challenge=challenge)
         await db.commit()
     except IntegrityError:
-        # Concurrent double-solve: the partial unique index already has a row.
         await db.rollback()
+        # Only treat the conflict as a duplicate if a correct solve now exists.
+        existing = (
+            await db.scalar(
+                select(Submission.id).where(
+                    Submission.challenge_id == challenge.id,
+                    Submission.user_id == user_id,
+                    Submission.is_correct.is_(True),
+                )
+            )
+            if correct
+            else None
+        )
+        if existing is None:
+            raise
         await record_audit(
             db,
             event="submission.attempt",
@@ -152,6 +185,9 @@ async def submit_flag(
         return FlagSubmitResult(
             correct=True, points=0, already_solved=True, message="Already solved"
         )
+    except Exception:
+        await db.rollback()
+        raise
 
     await record_audit(
         db,
@@ -164,22 +200,6 @@ async def submit_flag(
 
     if correct:
         from app.services.badges import grant_eligible_badges
-        from app.services.scoring import record_submission_score_event
-        from app.services.skill_profiles import update_profiles_for_solve
-
-        try:
-            await record_submission_score_event(
-                db,
-                user_id=user_id,
-                challenge=challenge,
-                penalty=(challenge.hint_penalty or 0) * revealed,
-            )
-        except Exception:
-            pass
-
-        await update_profiles_for_solve(db, user_id=user_id, challenge=challenge)
-        await db.commit()
-
         await grant_eligible_badges(db, user_id, request=request)
 
         from app.services.recommendations import refresh_challenge_difficulty_after_submission

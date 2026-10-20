@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+from app.core.rust_engine import calculate_score
 from app.models.challenges import Challenge
 from app.models.competitions import Competition
 from app.models.submissions import Submission
@@ -60,7 +62,11 @@ async def record_submission_score_event(
     competition: Competition | None = None,
     penalty: int = 0,
 ) -> ScoreEvent:
-    """Evaluate points according to scoring mode and record an immutable ScoreEvent."""
+    """Stage a score event in the caller's transaction without committing it.
+
+    The caller must flush the newly created correct Submission first so the
+    solve count includes that solve. This keeps both records atomic.
+    """
     mode = competition.scoring_mode if competition else "standard"
     comp_id = competition.id if competition else None
 
@@ -76,7 +82,8 @@ async def record_submission_score_event(
     if competition and competition.start_at:
         count_stmt = count_stmt.where(Submission.created_at >= competition.start_at)
     total_solves = int(await db.scalar(count_stmt) or 0)
-    current_solve_rank = total_solves + 1
+    # A correct submission has already been flushed by submit_flag().
+    current_solve_rank = max(1, total_solves)
 
     earned = challenge.points
     is_first = current_solve_rank == 1
@@ -87,9 +94,20 @@ async def record_submission_score_event(
         bonus = calculate_first_blood_bonus(current_solve_rank, challenge.points)
         earned = challenge.points + bonus
 
-    final_points = max(0, earned - penalty)
+    # The Rust implementation is the scoring authority when configured.
+    # Keep the existing calculation for standalone Python development/tests.
+    final_points = (
+        await calculate_score(
+            base_points=challenge.points,
+            solve_rank=current_solve_rank,
+            mode=mode,
+            penalty=penalty,
+        )
+        if get_settings().rust_core_url
+        else max(0, earned - penalty)
+    )
 
-    # Calculate user's current total score
+    # The event ledger is a snapshot. The leaderboard still uses Submission.
     total_prev = int(
         await db.scalar(
             select(func.sum(ScoreEvent.points)).where(
@@ -99,24 +117,18 @@ async def record_submission_score_event(
         )
         or 0
     )
-    new_total = total_prev + final_points
-
-    is_frozen = bool(competition and competition.freeze_leaderboard)
-
     event = ScoreEvent(
         user_id=user_id,
         competition_id=comp_id,
         challenge_id=challenge.id,
         event_type="solve",
         points=final_points,
-        current_total=new_total,
+        current_total=total_prev + final_points,
         is_first_blood=is_first,
-        is_frozen=is_frozen,
-        recorded_at=datetime.now(UTC),
+        is_frozen=bool(competition and competition.freeze_leaderboard),
     )
     db.add(event)
-    await db.commit()
-    await db.refresh(event)
+    await db.flush()
     return event
 
 

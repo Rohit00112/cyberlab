@@ -1,6 +1,18 @@
 name: cyberlab
 
 services:
+  security-core:
+    build:
+      context: ./apps/security-core
+    environment:
+      RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -77,6 +89,8 @@ services:
       OIDC_WELL_KNOWN_URL: http://keycloak:8080/realms/cyberlab/.well-known/openid-configuration
       OIDC_CLIENT_ID: api
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-dev-secret-change-me}
+      RUST_CORE_URL: http://security-core:8081
+      RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
     volumes:
       - ./apps/api:/app
       - /app/.venv
@@ -90,6 +104,8 @@ services:
       redis:
         condition: service_healthy
       keycloak:
+        condition: service_healthy
+      security-core:
         condition: service_healthy
     ports:
       - "8000:8000"

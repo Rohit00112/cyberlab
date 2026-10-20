@@ -256,7 +256,7 @@ async def test_launch_returns_503_on_unexpected_failure(test_db, monkeypatch):
         assert res.status_code == 503
         assert "unexpected error" in res.json()["detail"]
         res = await client.get("/api/v1/labs")
-        assert res.json()[0]["status"] == "error"
+        assert res.json()[0]["status"] == "failed"
         assert "adapter bug" in res.json()[0]["error_message"]
     app.dependency_overrides.clear()
 

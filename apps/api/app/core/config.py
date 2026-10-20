@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     app_secret: str = "change-me"
     access_token_cookie_name: str = "cyberlab_refresh"
     cors_origins: str = "http://localhost:3000"
+    # Internal Rust flag-verification and scoring service. Empty disables the migration slice.
+    rust_core_url: str = ""
+    rust_core_shared_token: str = ""
 
     # Lab / infrastructure (used from Phase 2 onward)
     labs_network_name: str = "cyberlab_labs"
