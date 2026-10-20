@@ -7,6 +7,7 @@ use axum::{
 use cyberlab_security_core::authorization::{
     authorize, AuthorizationRequest, AuthorizationResponse,
 };
+use cyberlab_security_core::catalog::{query_catalog, CatalogError, CatalogPage, CatalogQuery};
 use cyberlab_security_core::competition::{
     transition_competition, CompetitionTransitionRequest, CompetitionTransitionResponse,
 };
@@ -20,6 +21,7 @@ use subtle::ConstantTimeEq;
 #[derive(Clone)]
 struct AppState {
     token: Arc<String>,
+    database: Option<deadpool_postgres::Pool>,
 }
 
 fn authorized(headers: &HeaderMap, state: &AppState) -> bool {
@@ -100,6 +102,25 @@ async fn competition_transition(
         .map_err(|_| StatusCode::BAD_REQUEST)
 }
 
+async fn challenge_catalog(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CatalogQuery>,
+) -> Result<Json<CatalogPage>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match query_catalog(pool, &payload).await {
+        Ok(page) => Ok(Json(page)),
+        Err(CatalogError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(CatalogError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -109,6 +130,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Rust core token must be at least 32 bytes"
     );
     let port: u16 = env::var("PORT").unwrap_or_else(|_| "8081".into()).parse()?;
+    let database = match env::var("SECURITY_CORE_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let mut config = deadpool_postgres::Config::new();
+            config.url = Some(url);
+            config.pool = Some(deadpool_postgres::PoolConfig::new(8));
+            Some(config.create_pool(
+                Some(deadpool_postgres::Runtime::Tokio1),
+                tokio_postgres::NoTls,
+            )?)
+        }
+        _ => None,
+    };
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/verify", post(verify))
@@ -116,9 +149,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/lab-transition", post(lab_transition))
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))
+        .route("/v1/catalog/query", post(challenge_catalog))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(AppState {
             token: Arc::new(token),
+            database,
         });
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
     axum::serve(listener, app).await?;

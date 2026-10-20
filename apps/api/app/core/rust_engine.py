@@ -137,3 +137,33 @@ async def competition_transition(
     ):
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
     return next_status, error_code
+
+
+async def catalog_page(
+    *, editor: bool, category: str | None, difficulty: str | None,
+    status: str | None, limit: int, offset: int,
+) -> tuple[list[str], int]:
+    result = await _post("/v1/catalog/query", {
+        "editor": editor, "category": category, "difficulty": difficulty,
+        "status": status, "limit": limit, "offset": offset,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust catalog response")
+    ids, total = result.get("ids"), result.get("total")
+    import uuid
+
+    if (
+        not isinstance(ids, list)
+        or len(ids) > limit
+        or not all(isinstance(value, str) for value in ids)
+        or type(total) is not int
+        or total < 0
+    ):
+        raise HTTPException(status_code=503, detail="Invalid Rust catalog response")
+    try:
+        parsed = [str(uuid.UUID(value)) for value in ids]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=503, detail="Invalid Rust catalog IDs") from exc
+    if len(set(parsed)) != len(parsed):
+        raise HTTPException(status_code=503, detail="Duplicate Rust catalog IDs")
+    return parsed, total

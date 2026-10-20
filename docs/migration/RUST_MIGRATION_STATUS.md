@@ -10,6 +10,7 @@ The existing IIC CyberLab project remains in `/cyberlab`. A new internal Rust se
 - `POST /v1/lab-transition`: validates all lab-state transition arcs against the original state machine
 - `POST /v1/authorization`: expands Keycloak realm roles into permissions and checks access using Rust RBAC rules
 - `POST /v1/competition-transition`: validates organizer actions and time-based competition lifecycle changes in Rust
+- `POST /v1/catalog/query`: pooled PostgreSQL query returning filtered, paginated challenge IDs and counts; students are restricted to published challenges
 
 The FastAPI integration is in `apps/api/app/core/rust_engine.py`. Production/dev Compose services use internal Docker DNS and a shared secret. Rust traffic is not exposed by a host port, and malformed or unavailable service responses cause an HTTP 503. When running FastAPI without a Rust URL, its original Python path remains available for standalone development.
 
@@ -38,6 +39,8 @@ Next Rust RBAC slice verification: `cargo test --locked` (8 passed), `cargo clip
 Competition lifecycle slice: organizer transitions and scheduled start/finish decisions now use Rust when configured, while FastAPI retains database transactions, audit events and badge awards. Checks included 12 Rust tests, 12 new database/policy Python tests, 164 backend tests overall, and 378 live Rust/Python competition decisions across action and time boundaries. The parity check runs in CI through `apps/security-core/tools/check_competition_parity.py`. Repository-wide Ruff lint was also corrected and passed.
 
 Set `RUST_CORE_SHARED_TOKEN` to a distinct random 32+ character value in the host `.env`; Compose supplies it to the API and Rust core. The Rust service is reached internally at `http://security-core:8081`. Restart both services together after rotating this token.
+
+PostgreSQL catalog slice: Rust now queries challenge IDs and totals through a read-only repeatable-read transaction; FastAPI retains response formatting and checks visibility again after hydration. The database URL is supplied internally in development/production Compose as `SECURITY_CORE_DATABASE_URL`. Validation included 14 Rust tests, focused Python integration tests and a live PostgreSQL-backed Rust HTTP smoke query. Full role-based Rust-mode browser integration and production image checks remain outstanding.
 
 ## Remaining work
 

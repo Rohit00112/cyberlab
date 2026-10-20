@@ -6,6 +6,10 @@ services:
       context: ./apps/security-core
     environment:
       RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
+      SECURITY_CORE_DATABASE_URL: postgres://cyberlab:cyberlab@postgres:5432/cyberlab
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/health"]

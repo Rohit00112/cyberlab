@@ -9,7 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authorization import check_permission
+from app.core.config import get_settings
 from app.core.flags import hash_flag, slugify
+from app.core.rust_engine import catalog_page
 from app.models.challenges import Challenge
 from app.models.users import User
 from app.schemas.challenge import AuthorOut, ChallengeCreate, ChallengeOut, ChallengeUpdate
@@ -48,16 +50,40 @@ async def list_challenges(
     if difficulty:
         conditions.append(Challenge.difficulty == difficulty)
 
-    total = await db.scalar(select(func.count()).select_from(Challenge).where(*conditions))
-    challenges = (
-        await db.scalars(
-            select(Challenge)
-            .where(*conditions)
-            .order_by(Challenge.points.desc(), Challenge.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+    if get_settings().rust_core_url:
+        ids, total = await catalog_page(
+            editor=editor, category=category, difficulty=difficulty,
+            status=status_filter, limit=limit, offset=offset,
         )
-    ).all()
+        if ids:
+            records = (
+                await db.scalars(
+                    select(Challenge).where(Challenge.id.in_([uuid.UUID(x) for x in ids]))
+                )
+            ).all()
+            # The database may change between the Rust snapshot and hydration.
+            # Recheck every visibility/filter condition before returning.
+            by_id = {
+                str(challenge.id): challenge for challenge in records
+                if (editor or challenge.status == "published")
+                and (not editor or not status_filter or challenge.status == status_filter)
+                and (not category or challenge.category == category)
+                and (not difficulty or challenge.difficulty == difficulty)
+            }
+            challenges = [by_id[key] for key in ids if key in by_id]
+        else:
+            challenges = []
+    else:
+        total = await db.scalar(select(func.count()).select_from(Challenge).where(*conditions))
+        challenges = (
+            await db.scalars(
+                select(Challenge)
+                .where(*conditions)
+                .order_by(Challenge.points.desc(), Challenge.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
 
     authors = await _authors_map(db)
     counts = await revealed_counts(db, user_id, [c.id for c in challenges]) if user_id else {}

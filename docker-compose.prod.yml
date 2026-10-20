@@ -3,6 +3,10 @@ name: cyberlab-prod
 # Production deployment. Overrides/extends docker-compose.yml (docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build).
 # All services run production images; only Caddy publishes ports (80/443).
 services:
+  security-core:
+    environment:
+      SECURITY_CORE_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cyberlab
+
   postgres:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
