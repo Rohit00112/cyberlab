@@ -154,6 +154,16 @@ async def launch_lab(
             detail="This challenge does not provide a lab environment.",
         )
 
+    # Serialize launches for one user across API workers and processes. This
+    # row lock stays held until the lab (and async job) have been committed;
+    # checking counts without a lock allowed concurrent requests to exceed
+    # quotas or create duplicate active labs for the same challenge.
+    locked_user = await db.scalar(
+        select(User.id).where(User.id == user.id).with_for_update()
+    )
+    if locked_user is None:
+        raise HTTPException(status_code=403, detail="User not found")
+
     # 1. Idempotency guard: Return existing active lab if one is already running/provisioning
     existing = (
         await db.scalars(
@@ -165,7 +175,15 @@ async def launch_lab(
         )
     ).first()
     if existing:
-        return await _to_out(db, existing)
+        existing_job = await db.scalar(
+            select(ProvisioningJob.id)
+            .where(ProvisioningJob.lab_instance_id == existing.id)
+            .order_by(ProvisioningJob.created_at.desc())
+            .limit(1)
+        )
+        result = await _to_out(db, existing, job_id=existing_job)
+        await db.commit()  # Release the per-user launch lock.
+        return result
 
     settings = get_settings()
     template_ver = None
@@ -203,8 +221,7 @@ async def launch_lab(
             network_name=_network_name(user.id),
         )
         db.add(lab)
-        await db.commit()
-        await db.refresh(lab)
+        await db.flush()
 
         job = ProvisioningJob(
             lab_instance_id=lab.id,
@@ -215,6 +232,8 @@ async def launch_lab(
             config=lab_cfg,
         )
         db.add(job)
+        # The job and lab must become visible together. A second request
+        # must never discover a queued lab without its durable job record.
         await db.commit()
         await db.refresh(job)
 
@@ -224,11 +243,14 @@ async def launch_lab(
             job.celery_task_id = t.id
             await db.commit()
         except Exception:
-            import asyncio
+            # Leave the committed job pending. The periodic maintenance task
+            # retries dispatch after Redis/Celery recovers. An in-process
+            # asyncio task is lost whenever this API worker restarts.
+            import logging
 
-            from app.tasks.provisioning import execute_provisioning_job
-
-            asyncio.create_task(execute_provisioning_job(str(job.id)))
+            logging.getLogger("cyberlab.services.labs").exception(
+                "Provisioning dispatch failed for job %s; pending for retry", job.id
+            )
 
         await record_audit(
             db,

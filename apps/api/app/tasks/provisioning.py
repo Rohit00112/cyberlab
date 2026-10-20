@@ -7,6 +7,8 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
 from app.core.flags import generate_lab_flag, hash_flag
 from app.core.lab_transitions import transition_lab
 from app.core.states import LabState
@@ -24,21 +26,29 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
     """Core provisioning routine executed either via Celery or inline."""
     job_uuid = uuid.UUID(job_id_str)
     async with SessionLocal() as db:
-        job = await db.get(ProvisioningJob, job_uuid)
+        # Claim pending jobs atomically. Broker redelivery and the maintenance
+        # redispatch sweep may deliver the same job more than once.
+        job = await db.scalar(
+            select(ProvisioningJob)
+            .where(ProvisioningJob.id == job_uuid, ProvisioningJob.status == "pending")
+            .with_for_update(skip_locked=True)
+        )
         if not job:
-            logger.error("ProvisioningJob %s not found", job_uuid)
+            logger.info("ProvisioningJob %s is missing, claimed or already processed", job_uuid)
             return False
+
+        job.status = "running"
+        job.started_at = datetime.now(UTC)
+        await db.commit()
 
         lab = await db.get(LabInstance, job.lab_instance_id)
         challenge = await db.get(Challenge, job.challenge_id)
         if not lab or not challenge:
             job.status = "failed"
-            job.error_details = {"error": "Associated lab or challenge record missing"}
+            job.error_message = "Associated lab or challenge record missing"
             await db.commit()
             return False
 
-        job.status = "running"
-        job.started_at = datetime.now(UTC)
         try:
             lab.status = (await transition_lab(lab.status, LabState.PROVISIONING)).value
             await db.commit()
@@ -85,9 +95,43 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             lab.error_message = str(exc)
             job.status = "failed"
             job.completed_at = datetime.now(UTC)
-            job.error_details = {"error": str(exc)}
+            job.error_message = str(exc)
             await db.commit()
             return False
+
+
+async def redispatch_pending_provisioning_jobs(*, limit: int = 50) -> int:
+    """Retry broker delivery of durable pending jobs after a transient outage.
+
+    A job is claimed for execution by the worker, not by this dispatcher.
+    This makes duplicate dispatch safe even if maintenance runs concurrently.
+    """
+    async with SessionLocal() as db:
+        job_ids = (
+            await db.scalars(
+                select(ProvisioningJob.id)
+                .where(ProvisioningJob.status == "pending")
+                .order_by(ProvisioningJob.created_at.asc())
+                .limit(limit)
+            )
+        ).all()
+
+    dispatched = 0
+    for job_id in job_ids:
+        try:
+            result = provision_lab_task.delay(str(job_id))
+        except Exception:
+            logger.exception("Could not redispatch provisioning job %s", job_id)
+            continue
+        # No need to hold DB locks across broker I/O. If the task already
+        # claimed the job it is no longer pending, so this update is advisory.
+        async with SessionLocal() as db:
+            job = await db.get(ProvisioningJob, job_id)
+            if job is not None and job.status == "pending":
+                job.celery_task_id = result.id
+                await db.commit()
+        dispatched += 1
+    return dispatched
 
 
 @celery_app.task(name="app.tasks.provisioning.provision_lab_task", bind=True, max_retries=2)

@@ -1,11 +1,15 @@
 """Integration tests for lab lifecycle (Phase 2 Cyber Range, PRD §46-§51)."""
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import CurrentUser, get_current_user
@@ -17,6 +21,9 @@ from app.infrastructure import docker as docker_module
 from app.infrastructure.docker import DockerError
 from app.main import app
 from app.models import Challenge, User  # noqa: F401  (registers tables)
+from app.models.labs import LabInstance
+from app.models.provisioning import ProvisioningJob
+from app.services import labs as lab_service
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -174,6 +181,91 @@ async def test_quota_limits_concurrent_labs(test_db):
         res = await client.post(f"/api/v1/challenges/{challenges[2].id}/lab/launch")
         assert res.status_code == 409
     app.dependency_overrides.clear()
+
+
+async def test_concurrent_async_launch_has_one_lab_and_durable_job(test_db, monkeypatch):
+    from app.tasks.provisioning import provision_lab_task
+
+    user = _student(sub=f"lab-concurrent-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(
+        test_db, slug=f"_lc_{uuid.uuid4().hex[:6]}"
+    )
+    monkeypatch.setattr(
+        provision_lab_task, "delay", lambda job_id: SimpleNamespace(id=f"queued-{job_id}")
+    )
+
+    async def launch():
+        async with test_db() as db:
+            return await lab_service.launch_lab(db, user, challenge, sync=False)
+
+    first, second = await asyncio.gather(launch(), launch())
+    assert first.id == second.id
+    assert first.job_id == second.job_id
+    assert first.job_id is not None
+    async with test_db() as db:
+        assert await db.scalar(select(func.count()).select_from(LabInstance)) == 1
+        assert await db.scalar(select(func.count()).select_from(ProvisioningJob)) == 1
+
+
+async def test_concurrent_async_launch_respects_user_quota(test_db, monkeypatch):
+    from app.tasks.provisioning import provision_lab_task
+
+    user = _student(sub=f"lab-concurrent-quota-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenges = [
+        await _seed_challenge(test_db, slug=f"_lcq_{uuid.uuid4().hex[:6]}")
+        for _ in range(3)
+    ]
+    monkeypatch.setattr(
+        provision_lab_task, "delay", lambda job_id: SimpleNamespace(id=f"queued-{job_id}")
+    )
+
+    async def launch(challenge):
+        async with test_db() as db:
+            return await lab_service.launch_lab(db, user, challenge, sync=False)
+
+    results = await asyncio.gather(
+        *(launch(challenge) for challenge in challenges), return_exceptions=True
+    )
+    successful = [result for result in results if not isinstance(result, BaseException)]
+    rejected = [result for result in results if isinstance(result, HTTPException)]
+    assert len(successful) == 2
+    assert len(rejected) == 1 and rejected[0].status_code == 409
+    async with test_db() as db:
+        assert await db.scalar(select(func.count()).select_from(LabInstance)) == 2
+        assert await db.scalar(select(func.count()).select_from(ProvisioningJob)) == 2
+
+
+async def test_failed_broker_dispatch_is_durable_and_retried(test_db, monkeypatch):
+    from app.tasks import provisioning
+
+    user = _student(sub=f"lab-retry-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lr_{uuid.uuid4().hex[:6]}")
+
+    def broker_down(_job_id):
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(provisioning.provision_lab_task, "delay", broker_down)
+    async with test_db() as db:
+        queued = await lab_service.launch_lab(db, user, challenge, sync=False)
+    assert queued.status == "queued" and queued.job_id is not None
+    async with test_db() as db:
+        job = await db.get(ProvisioningJob, queued.job_id)
+        assert job.status == "pending" and job.celery_task_id is None
+
+    monkeypatch.setattr(provisioning, "SessionLocal", test_db)
+    monkeypatch.setattr(
+        provisioning.provision_lab_task,
+        "delay",
+        lambda job_id: SimpleNamespace(id=f"replayed-{job_id}"),
+    )
+    assert await provisioning.redispatch_pending_provisioning_jobs() == 1
+    async with test_db() as db:
+        job = await db.get(ProvisioningJob, queued.job_id)
+        assert job.status == "pending"
+        assert job.celery_task_id == f"replayed-{queued.job_id}"
 
 
 async def test_stop_and_reset_flow(test_db):

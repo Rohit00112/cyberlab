@@ -8,6 +8,7 @@ import logging
 from app.db.base import SessionLocal
 from app.services.competitions import auto_transition_competitions
 from app.services.labs import expire_stale_labs
+from app.tasks.provisioning import redispatch_pending_provisioning_jobs
 from app.worker import celery_app
 
 logger = logging.getLogger("cyberlab.tasks.maintenance")
@@ -17,6 +18,7 @@ async def _run_maintenance_sweep() -> dict[str, int]:
     async with SessionLocal() as db:
         labs_changed = 0
         comp_changed = 0
+        jobs_redispatched = 0
         try:
             labs_changed = await expire_stale_labs(db)
         except Exception:
@@ -29,7 +31,16 @@ async def _run_maintenance_sweep() -> dict[str, int]:
             logger.exception("Celery competition auto-transition failed")
             await db.rollback()
 
-        return {"labs_expired": labs_changed, "competitions_transitioned": comp_changed}
+        try:
+            jobs_redispatched = await redispatch_pending_provisioning_jobs()
+        except Exception:
+            logger.exception("Celery pending provisioning redispatch failed")
+
+        return {
+            "labs_expired": labs_changed,
+            "competitions_transitioned": comp_changed,
+            "provisioning_jobs_redispatched": jobs_redispatched,
+        }
 
 
 @celery_app.task(name="app.tasks.maintenance.maintenance_sweep_task")
