@@ -184,8 +184,21 @@ async def update_challenge(
 
 
 async def publish_challenge(
-    db: AsyncSession, challenge: Challenge, user_id: uuid.UUID, request: Any = None
+    db: AsyncSession, challenge: Challenge, user_id: uuid.UUID, request: Any = None,
+    roles: list[str] | None = None,
 ) -> ChallengeOut:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import publish_challenge_in_rust
+
+        challenge_id = challenge.id
+        await db.rollback()
+        await publish_challenge_in_rust(
+            str(challenge_id), str(user_id), roles or [],
+            request.client.host if request and request.client else None,
+        )
+        challenge = await db.get(Challenge, challenge_id, populate_existing=True)
+        authors = await _authors_map(db)
+        return _to_out(challenge, authors)
     if challenge.flag_hash is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

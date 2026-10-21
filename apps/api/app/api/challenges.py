@@ -96,7 +96,9 @@ async def publish_challenge(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.publish"))],
 ):
     challenge = await _get_editable(db, challenge_id)
-    return await service.publish_challenge(db, challenge, user.id, request=request)
+    return await service.publish_challenge(
+        db, challenge, user.id, request=request, roles=user.roles
+    )
 
 
 @router.delete("/{challenge_id}", status_code=status.HTTP_204_NO_CONTENT)

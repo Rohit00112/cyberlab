@@ -14,6 +14,7 @@ use cyberlab_security_core::competition::{
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
 };
+use cyberlab_security_core::publishing::{publish, PublishError, PublishRequest, PublishResponse};
 use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
@@ -25,6 +26,7 @@ use subtle::ConstantTimeEq;
 struct AppState {
     token: Arc<String>,
     database: Option<deadpool_postgres::Pool>,
+    write_database: Option<deadpool_postgres::Pool>,
 }
 
 fn authorized(headers: &HeaderMap, state: &AppState) -> bool {
@@ -167,6 +169,26 @@ async fn leaderboard(
     }
 }
 
+async fn publish_challenge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PublishRequest>,
+) -> Result<Json<PublishResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match publish(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -188,6 +210,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => None,
     };
+    let write_database = match env::var("SECURITY_CORE_WRITE_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let mut config = deadpool_postgres::Config::new();
+            config.url = Some(url);
+            config.pool = Some(deadpool_postgres::PoolConfig::new(4));
+            Some(config.create_pool(
+                Some(deadpool_postgres::Runtime::Tokio1),
+                tokio_postgres::NoTls,
+            )?)
+        }
+        _ => None,
+    };
     let app = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -198,10 +232,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/competition-transition", post(competition_transition))
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))
+        .route("/v1/challenges/publish", post(publish_challenge))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(AppState {
             token: Arc::new(token),
             database,
+            write_database,
         });
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
     axum::serve(listener, app).await?;

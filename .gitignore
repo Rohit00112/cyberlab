@@ -37,6 +37,7 @@ logs/
 
 # Docker / infra ephemeral
 *.pid
+apps/api/celerybeat-schedule*
 
 # Research dataset artifacts (Phase 6)
 data/

@@ -30,3 +30,24 @@ GRANT SELECT (user_id, is_correct, earned_points, created_at)
 
 ALTER ROLE cyberlab_security_core IN DATABASE cyberlab
   SET default_transaction_read_only = on;
+
+-- Independent writer, limited to challenge publication and its audit event.
+SELECT 'CREATE ROLE cyberlab_security_writer LOGIN NOINHERIT'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cyberlab_security_writer')
+\gexec
+\getenv writer_password SECURITY_CORE_WRITE_DB_PASSWORD
+\if :{?writer_password}
+\else
+  \echo 'SECURITY_CORE_WRITE_DB_PASSWORD is required'
+  \quit 1
+\endif
+ALTER ROLE cyberlab_security_writer
+  WITH LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  PASSWORD :'writer_password';
+GRANT CONNECT ON DATABASE cyberlab TO cyberlab_security_writer;
+GRANT USAGE ON SCHEMA public TO cyberlab_security_writer;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cyberlab_security_writer;
+GRANT SELECT (id, slug, flag_hash) ON public.challenges TO cyberlab_security_writer;
+GRANT UPDATE (status, version, updated_at) ON public.challenges TO cyberlab_security_writer;
+GRANT SELECT (version) ON public.challenges TO cyberlab_security_writer;
+GRANT INSERT (id, event, user_id, target_id, ip_address) ON public.audit_logs TO cyberlab_security_writer;

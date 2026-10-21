@@ -19,7 +19,7 @@ class AuditLog(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
-    target_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    target_id: Mapped[str | None] = mapped_column(String(120), index=True)
     ip_address: Mapped[str | None] = mapped_column(String(45))
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

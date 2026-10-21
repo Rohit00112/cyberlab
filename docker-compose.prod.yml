@@ -6,6 +6,7 @@ services:
   security-core:
     environment:
       SECURITY_CORE_DATABASE_URL: postgres://cyberlab_security_core:${SECURITY_CORE_DB_PASSWORD:?Set a URL-safe password for Rust's read-only DB role}@postgres:5432/cyberlab
+      SECURITY_CORE_WRITE_DATABASE_URL: postgres://cyberlab_security_writer:${SECURITY_CORE_WRITE_DB_PASSWORD:?Set a URL-safe password for Rust's write DB role}@postgres:5432/cyberlab
 
   # Run once after Alembic schema migrations, and after each permission-
   # relevant schema change. Not part of the normal application startup.
@@ -16,6 +17,7 @@ services:
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       SECURITY_CORE_DB_PASSWORD: ${SECURITY_CORE_DB_PASSWORD:?Set a URL-safe password for Rust's read-only DB role}
+      SECURITY_CORE_WRITE_DB_PASSWORD: ${SECURITY_CORE_WRITE_DB_PASSWORD:?Set a URL-safe password for Rust's write DB role}
     volumes:
       - ./infrastructure/docker/security-core-role.sql:/setup/security-core-role.sql:ro
     depends_on:

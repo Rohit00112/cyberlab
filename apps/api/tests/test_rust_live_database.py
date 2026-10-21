@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import asyncpg
 import httpx
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.deps import CurrentUser, get_current_user
@@ -27,7 +28,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import Challenge, Submission, User  # noqa: F401 (registers tables)
+from app.models import AuditLog, Challenge, Submission, User  # noqa: F401 (registers tables)
 from app.services import challenges, submissions
 
 pytestmark = [
@@ -76,7 +77,7 @@ async def live_rust_database():
             c1 = Challenge(
                 slug=f"parity-pub1-{uuid.uuid4().hex}", title="Published 1",
                 description="Challenge", category="Linux", difficulty="beginner",
-                points=150, status="published",
+                points=150, status="published", flag_hash="a" * 64,
             )
             c2 = Challenge(
                 slug=f"parity-pub2-{uuid.uuid4().hex}", title="Published 2",
@@ -123,6 +124,7 @@ async def live_rust_database():
                 "PORT": str(port),
                 "RUST_CORE_SHARED_TOKEN": token,
                 "SECURITY_CORE_DATABASE_URL": rust_db_url,
+                "SECURITY_CORE_WRITE_DATABASE_URL": rust_db_url,
             },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -259,6 +261,53 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 json={"limit": 0}, headers={"x-internal-token": ctx.token},
             )
             assert bad_limit.status_code == 400
+            publish_url = f"{ctx.rust_url}/v1/challenges/publish"
+            payload = {
+                "challenge_id": str(c1),
+                "actor_id": str(u1),
+                "roles": ["faculty"],
+                "ip_address": "127.0.0.1",
+            }
+            denied = await client.post(publish_url, json={**payload, "roles": ["student"]},
+                                       headers={"x-internal-token": ctx.token})
+            assert denied.status_code == 403
+            first = await client.post(publish_url, json=payload,
+                                      headers={"x-internal-token": ctx.token})
+            assert first.status_code == 200 and first.json()["outcome"] == "published"
+            second = await client.post(publish_url, json=payload,
+                                       headers={"x-internal-token": ctx.token})
+            assert second.status_code == 200
+            assert second.json()["version"] == first.json()["version"] + 1
+            missing_flag = await client.post(
+                publish_url, json={**payload, "challenge_id": str(c2)},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert missing_flag.status_code == 200
+            assert missing_flag.json()["outcome"] == "missing_flag"
+        async with ctx.factory() as db:
+            published = await db.get(Challenge, c1)
+            assert published.version == 3
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "challenge.publish", AuditLog.user_id == u1)
+            ) == 2
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id=u1, keycloak_sub="test", roles=["faculty"]
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            published_response = await client.post(f"/api/v1/challenges/{c1}/publish")
+            assert published_response.status_code == 200
+            assert published_response.json()["version"] == 4
+            missing_response = await client.post(f"/api/v1/challenges/{c2}/publish")
+            assert missing_response.status_code == 400
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "challenge.publish", AuditLog.user_id == u1)
+            ) == 3
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
