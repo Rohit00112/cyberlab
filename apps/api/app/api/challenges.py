@@ -109,4 +109,6 @@ async def delete_challenge(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.edit"))],
 ):
     challenge = await _get_editable(db, challenge_id)
-    await service.delete_challenge(db, challenge, user.id, request=request)
+    await service.delete_challenge(
+        db, challenge, user.id, request=request, roles=user.roles
+    )

@@ -38,6 +38,10 @@ fn valid_uuid(value: &str) -> bool {
 }
 
 pub fn validate(request: &PublishRequest) -> Result<(), PublishError> {
+    validate_permission(request, "challenge.publish")
+}
+
+fn validate_permission(request: &PublishRequest, permission: &str) -> Result<(), PublishError> {
     if !valid_uuid(&request.challenge_id)
         || !valid_uuid(&request.actor_id)
         || request
@@ -49,13 +53,62 @@ pub fn validate(request: &PublishRequest) -> Result<(), PublishError> {
     }
     let auth = authorize(&AuthorizationRequest {
         roles: request.roles.clone(),
-        permission: Some("challenge.publish".into()),
+        permission: Some(permission.into()),
     })
     .map_err(|_| PublishError::Invalid)?;
     if auth.allowed != Some(true) {
         return Err(PublishError::Forbidden);
     }
     Ok(())
+}
+
+pub async fn delete(
+    pool: &Pool,
+    request: &PublishRequest,
+) -> Result<PublishResponse, PublishError> {
+    validate_permission(request, "challenge.edit")?;
+    let mut client = pool.get().await.map_err(|_| PublishError::Database)?;
+    let transaction = client
+        .transaction()
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let row = transaction
+        .query_opt(
+            "SELECT slug FROM challenges WHERE id = ($1::text)::uuid FOR UPDATE",
+            &[&request.challenge_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let Some(row) = row else {
+        return Ok(PublishResponse {
+            outcome: "not_found".into(),
+            version: None,
+        });
+    };
+    let slug: String = row.get(0);
+    transaction
+        .execute(
+            "DELETE FROM challenges WHERE id = ($1::text)::uuid",
+            &[&request.challenge_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    transaction
+        .execute(
+            "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address)
+             VALUES (gen_random_uuid(), 'challenge.delete', ($1::text)::uuid, $2, $3)",
+            &[&request.actor_id, &slug, &request.ip_address],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| PublishError::Database)?;
+    Ok(PublishResponse {
+        outcome: "deleted".into(),
+        version: None,
+    })
 }
 
 pub async fn publish(
@@ -143,5 +196,10 @@ mod tests {
         bad.challenge_id = "not-a-uuid".into();
         assert!(matches!(validate(&bad), Err(PublishError::Invalid)));
         assert!(validate(&request(vec!["faculty".into()])).is_ok());
+        assert!(validate_permission(&request(vec!["faculty".into()]), "challenge.edit").is_ok());
+        assert!(matches!(
+            validate_permission(&request(vec!["student".into()]), "challenge.edit"),
+            Err(PublishError::Forbidden)
+        ));
     }
 }

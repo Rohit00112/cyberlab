@@ -14,7 +14,9 @@ use cyberlab_security_core::competition::{
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
 };
-use cyberlab_security_core::publishing::{publish, PublishError, PublishRequest, PublishResponse};
+use cyberlab_security_core::publishing::{
+    delete, publish, PublishError, PublishRequest, PublishResponse,
+};
 use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
@@ -189,6 +191,26 @@ async fn publish_challenge(
     }
 }
 
+async fn delete_challenge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PublishRequest>,
+) -> Result<Json<PublishResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match delete(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -233,6 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))
         .route("/v1/challenges/publish", post(publish_challenge))
+        .route("/v1/challenges/delete", post(delete_challenge))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(AppState {
             token: Arc::new(token),

@@ -51,3 +51,4 @@ GRANT SELECT (id, slug, flag_hash) ON public.challenges TO cyberlab_security_wri
 GRANT UPDATE (status, version, updated_at) ON public.challenges TO cyberlab_security_writer;
 GRANT SELECT (version) ON public.challenges TO cyberlab_security_writer;
 GRANT INSERT (id, event, user_id, target_id, ip_address) ON public.audit_logs TO cyberlab_security_writer;
+GRANT DELETE ON public.challenges TO cyberlab_security_writer;

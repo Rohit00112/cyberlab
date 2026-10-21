@@ -82,6 +82,22 @@ async def publish_challenge_in_rust(
     return result["version"]
 
 
+async def delete_challenge_in_rust(
+    challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
+) -> None:
+    result = await _post("/v1/challenges/delete", {
+        "challenge_id": challenge_id,
+        "actor_id": actor_id,
+        "roles": roles,
+        "ip_address": ip_address,
+    })
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if outcome != "deleted":
+        raise HTTPException(status_code=503, detail="Invalid Rust security core response")
+
+
 async def calculate_score(
     *, base_points: int, solve_rank: int, mode: str, penalty: int
 ) -> int:

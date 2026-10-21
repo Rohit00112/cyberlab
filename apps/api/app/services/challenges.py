@@ -216,8 +216,19 @@ async def publish_challenge(
 
 
 async def delete_challenge(
-    db: AsyncSession, challenge: Challenge, user_id: uuid.UUID, request: Any = None
+    db: AsyncSession, challenge: Challenge, user_id: uuid.UUID, request: Any = None,
+    roles: list[str] | None = None,
 ) -> None:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import delete_challenge_in_rust
+
+        challenge_id = challenge.id
+        await db.rollback()
+        await delete_challenge_in_rust(
+            str(challenge_id), str(user_id), roles or [],
+            request.client.host if request and request.client else None,
+        )
+        return
     slug = challenge.slug
     await db.delete(challenge)
     await db.commit()

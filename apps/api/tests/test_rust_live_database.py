@@ -303,11 +303,20 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             assert published_response.json()["version"] == 4
             missing_response = await client.post(f"/api/v1/challenges/{c2}/publish")
             assert missing_response.status_code == 400
+            deleted_response = await client.delete(f"/api/v1/challenges/{c3}")
+            assert deleted_response.status_code == 204
+            repeated_delete = await client.delete(f"/api/v1/challenges/{c3}")
+            assert repeated_delete.status_code == 404
         async with ctx.factory() as db:
+            assert await db.get(Challenge, c3) is None
             assert await db.scalar(
                 select(func.count()).select_from(AuditLog)
                 .where(AuditLog.event == "challenge.publish", AuditLog.user_id == u1)
             ) == 3
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "challenge.delete", AuditLog.user_id == u1)
+            ) == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
