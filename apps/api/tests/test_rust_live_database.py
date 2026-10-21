@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import asyncpg
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.deps import CurrentUser, get_current_user
@@ -284,6 +284,12 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             )
             assert missing_flag.status_code == 200
             assert missing_flag.json()["outcome"] == "missing_flag"
+            forbidden_delete = await client.post(
+                f"{ctx.rust_url}/v1/challenges/delete",
+                json={**payload, "challenge_id": str(c3), "roles": ["student"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden_delete.status_code == 403
         async with ctx.factory() as db:
             published = await db.get(Challenge, c1)
             assert published.version == 3
@@ -317,6 +323,40 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 select(func.count()).select_from(AuditLog)
                 .where(AuditLog.event == "challenge.delete", AuditLog.user_id == u1)
             ) == 1
+
+        # Force an audit-insert failure in the disposable DB. The corresponding
+        # challenge mutation must roll back, rather than publish without audit.
+        async with ctx.factory() as db:
+            rollback_challenge = Challenge(
+                slug=f"rollback-{uuid.uuid4().hex}",
+                title="Rollback challenge",
+                description="Audit must commit with publication",
+                category="Linux",
+                difficulty="beginner",
+                points=25,
+                status="draft",
+                flag_hash="b" * 64,
+            )
+            db.add(rollback_challenge)
+            await db.flush()
+            rollback_id = rollback_challenge.id
+            await db.commit()
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT audit_block_publish "
+                "CHECK (event <> 'challenge.publish') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=2) as client:
+            failed_publish = await client.post(
+                f"{ctx.rust_url}/v1/challenges/publish",
+                json={**payload, "challenge_id": str(rollback_id)},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert failed_publish.status_code == 503
+        async with ctx.factory() as db:
+            row = await db.get(Challenge, rollback_id)
+            assert row.status == "draft"
+            assert row.version == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
