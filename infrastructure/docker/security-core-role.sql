@@ -135,3 +135,8 @@ GRANT INSERT (id, slug, title, description, rules, start_at, end_at,
 -- RETURNING reads id, and ON CONFLICT (slug) checks the arbiter column.
 -- Keep these column-scoped; the writer cannot read competition details.
 GRANT SELECT (id, slug) ON public.competitions TO cyberlab_security_writer;
+-- Edit locks and rechecks the state before the update; no broad table access.
+GRANT SELECT (status) ON public.competitions TO cyberlab_security_writer;
+GRANT UPDATE (title, description, rules, start_at, end_at,
+  registration_ends_at, allow_teams, max_team_size, scoring_mode, updated_at)
+  ON public.competitions TO cyberlab_security_writer;

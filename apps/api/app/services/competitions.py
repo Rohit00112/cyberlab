@@ -148,6 +148,20 @@ async def update_competition(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="start_at must be before end_at",
         )
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import edit_competition_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await edit_competition_in_rust(
+            str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            data.model_dump(mode="json", exclude_unset=True),
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     for field, value in updates.items():
         setattr(competition, field, value)
     await db.commit()

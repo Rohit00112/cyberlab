@@ -112,6 +112,27 @@ async def create_competition_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition ID") from exc
 
 
+async def edit_competition_in_rust(
+    competition_id: str, actor_id: str, roles: list[str],
+    ip_address: str | None, changes: dict,
+) -> None:
+    result = await _post("/v1/competitions/edit", {
+        "competition_id": competition_id, "actor_id": actor_id,
+        "roles": roles, "ip_address": ip_address, "changes": changes,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    if result.get("outcome") == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if result.get("outcome") == "locked":
+        raise HTTPException(
+            status_code=409,
+            detail="Competition is already live or finished — fields are locked.",
+        )
+    if result.get("outcome") != "updated":
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

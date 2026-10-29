@@ -747,3 +747,198 @@ async def test_rust_competition_creation_is_atomic_and_api_compatible(
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_edit_is_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, _, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=organizer_id, keycloak_sub="edit-test", roles=["faculty"],
+    )
+    async with ctx.factory() as db:
+        competition = Competition(
+            slug="edit-ctf", title="Before edit", status="draft",
+            created_by=organizer_id, description="Original",
+        )
+        rollback_competition = Competition(
+            slug="edit-rollback-ctf", title="Must stay original", status="draft",
+            created_by=organizer_id,
+        )
+        db.add_all([competition, rollback_competition])
+        await db.commit()
+        competition_id, rollback_id = competition.id, rollback_competition.id
+
+    internal = f"{ctx.rust_url}/v1/competitions/edit"
+    rust_payload = {
+        "competition_id": str(competition_id), "actor_id": str(organizer_id),
+        "roles": ["faculty"], "ip_address": "127.0.0.1",
+        "changes": {"title": "From Rust"},
+    }
+    try:
+        start = datetime.now(UTC) + timedelta(days=1)
+        end = start + timedelta(hours=2)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            first = await client.patch(
+                f"/api/v1/competitions/{competition_id}",
+                json={
+                    "title": "From Rust", "description": "Updated",
+                    "start_at": start.isoformat(), "end_at": end.isoformat(),
+                    "allow_teams": True, "max_team_size": 6,
+                },
+            )
+            assert first.status_code == 200, first.text
+            assert first.json()["title"] == "From Rust"
+            assert first.json()["slug"] == "edit-ctf"
+            assert first.json()["status"] == "draft"
+            assert first.json()["max_team_size"] == 6
+            assert first.json()["allow_teams"] is True
+
+            cleared = await client.patch(
+                f"/api/v1/competitions/{competition_id}",
+                json={"description": None, "rules": "New rules"},
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["description"] is None
+            # The existing PATCH response deliberately hides draft rules.
+            assert cleared.json()["rules"] is None
+
+            invalid_dates = await client.patch(
+                f"/api/v1/competitions/{competition_id}",
+                json={"start_at": end.isoformat(), "end_at": start.isoformat()},
+            )
+            assert invalid_dates.status_code == 400
+
+        async with ctx.factory() as db:
+            persisted = await db.get(Competition, competition_id)
+            assert persisted.title == "From Rust"
+            assert persisted.description is None
+            assert persisted.rules == "New rules"
+            assert persisted.start_at == start
+            assert persisted.end_at == end
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.update",
+                       AuditLog.target_id == "edit-ctf")
+            ) == 2
+
+        async with httpx.AsyncClient(timeout=2) as client:
+            unauthorized = await client.post(internal, json=rust_payload)
+            assert unauthorized.status_code == 401
+            forbidden = await client.post(
+                internal, json={**rust_payload, "roles": ["student"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden.status_code == 403
+            forbidden_field = await client.post(
+                internal, json={**rust_payload, "changes": {"status": "live"}},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden_field.status_code == 400
+            invalid_timestamp = await client.post(
+                internal, json={**rust_payload, "changes": {"start_at": "nonsense"}},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert invalid_timestamp.status_code == 400
+            invalid_order = await client.post(
+                internal, json={**rust_payload, "changes": {
+                    "start_at": end.isoformat(), "end_at": start.isoformat(),
+                }}, headers={"x-internal-token": ctx.token},
+            )
+            assert invalid_order.status_code == 400
+
+        # Prove the edit SQL works with only the intended SELECT/UPDATE columns.
+        # CREATE ROLE and all grants disappear when this transaction rolls back.
+        probe = f"cyberlab_edit_probe_{uuid.uuid4().hex[:12]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                await db.execute(text(
+                    f'GRANT SELECT (id, slug, status) ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (title, description, rules, start_at, end_at, '
+                    'registration_ends_at, allow_teams, max_team_size, scoring_mode, '
+                    f'updated_at) ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{probe}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                locked = await db.execute(text(
+                    "SELECT slug, status FROM competitions WHERE id=:id FOR UPDATE"
+                ), {"id": competition_id})
+                assert locked.first() == ("edit-ctf", "draft")
+                await db.execute(text(
+                    "UPDATE competitions SET title='Privilege probe', updated_at=now() "
+                    "WHERE id=:id"
+                ), {"id": competition_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                    "VALUES (gen_random_uuid(), 'competition.update', :actor, 'edit-ctf')"
+                ), {"actor": organizer_id})
+            finally:
+                await db.rollback()
+
+        async with ctx.factory() as db:
+            locked_competition = await db.get(Competition, competition_id)
+            assert locked_competition.title == "From Rust"
+            locked_competition.status = "live"
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            locked_public = await client.patch(
+                f"/api/v1/competitions/{competition_id}",
+                json={"title": "Must not change"},
+            )
+            assert locked_public.status_code == 409
+        async with httpx.AsyncClient(timeout=2) as client:
+            locked_internal = await client.post(
+                internal, json=rust_payload,
+                headers={"x-internal-token": ctx.token},
+            )
+            assert locked_internal.status_code == 200
+            assert locked_internal.json()["outcome"] == "locked"
+
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_competition_update "
+                "CHECK (event <> 'competition.update') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failure = await client.patch(
+                f"/api/v1/competitions/{rollback_id}",
+                json={"title": "Should roll back"},
+            )
+            assert failure.status_code == 503
+        async with ctx.factory() as db:
+            row = await db.get(Competition, rollback_id)
+            assert row.title == "Must stay original"
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.update")
+            ) == 2
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)

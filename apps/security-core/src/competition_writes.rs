@@ -20,6 +20,162 @@ pub struct CompetitionCreateResponse {
     pub competition_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CompetitionEditRequest {
+    pub competition_id: String,
+    pub actor_id: String,
+    pub roles: Vec<String>,
+    pub ip_address: Option<String>,
+    pub changes: Map<String, Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompetitionEditResponse {
+    pub outcome: String,
+}
+
+pub fn validate_edit(request: &CompetitionEditRequest) -> Result<(), PublishError> {
+    validate_permission(
+        &PublishRequest {
+            actor_id: request.actor_id.clone(),
+            challenge_id: request.competition_id.clone(),
+            roles: request.roles.clone(),
+            ip_address: request.ip_address.clone(),
+        },
+        "competition.manage",
+    )?;
+    for (key, value) in &request.changes {
+        let valid = match key.as_str() {
+            "title" => value
+                .as_str()
+                .is_some_and(|s| !s.is_empty() && s.chars().count() <= 200),
+            "description" | "rules" | "start_at" | "end_at" | "registration_ends_at" => {
+                value.is_null() || value.is_string()
+            }
+            "allow_teams" => value.is_boolean(),
+            "max_team_size" => value.as_i64().is_some_and(|size| (1..=10).contains(&size)),
+            "scoring_mode" => matches!(value.as_str(), Some("standard" | "override")),
+            // Never accept direct status, freeze, audit or ownership edits.
+            _ => false,
+        };
+        if !valid {
+            return Err(PublishError::Invalid);
+        }
+    }
+    Ok(())
+}
+
+pub async fn edit(
+    pool: &Pool,
+    request: &CompetitionEditRequest,
+) -> Result<CompetitionEditResponse, PublishError> {
+    validate_edit(request)?;
+    let mut client = pool.get().await.map_err(|_| PublishError::Database)?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let row = tx
+        .query_opt(
+            "SELECT slug, status FROM competitions WHERE id = ($1::text)::uuid FOR UPDATE",
+            &[&request.competition_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let Some(row) = row else {
+        return Ok(CompetitionEditResponse {
+            outcome: "not_found".into(),
+        });
+    };
+    let slug: String = row.get(0);
+    let current_status: String = row.get(1);
+    if !matches!(
+        current_status.as_str(),
+        "draft" | "registration" | "scheduled"
+    ) {
+        return Ok(CompetitionEditResponse {
+            outcome: "locked".into(),
+        });
+    }
+
+    let json = Value::Object(request.changes.clone()).to_string();
+    for key in ["start_at", "end_at", "registration_ends_at"] {
+        if let Some(stamp) = request.changes.get(key).and_then(Value::as_str) {
+            tx.query_one("SELECT ($1::text)::timestamptz", &[&stamp])
+                .await
+                .map_err(|_| PublishError::Invalid)?;
+        }
+    }
+    // Match the existing public PATCH rule: compare the two proposed dates
+    // only when both are supplied, not against unchanged stored dates.
+    if request
+        .changes
+        .get("start_at")
+        .and_then(Value::as_str)
+        .is_some()
+        && request
+            .changes
+            .get("end_at")
+            .and_then(Value::as_str)
+            .is_some()
+    {
+        let invalid: bool = tx
+            .query_one(
+                "SELECT ($1::text::jsonb->>'start_at')::timestamptz >= \
+                        ($1::text::jsonb->>'end_at')::timestamptz",
+                &[&json],
+            )
+            .await
+            .map_err(|_| PublishError::Invalid)?
+            .get(0);
+        if invalid {
+            return Err(PublishError::Invalid);
+        }
+    }
+
+    let mut assignments = Vec::new();
+    for key in request.changes.keys() {
+        // These fragments are constants selected by a validated allowlist;
+        // no caller-controlled SQL identifiers or values are interpolated.
+        let expression = match key.as_str() {
+            "title" => "title = $2::text::jsonb->>'title'",
+            "description" => "description = $2::text::jsonb->>'description'",
+            "rules" => "rules = $2::text::jsonb->>'rules'",
+            "start_at" => "start_at = ($2::text::jsonb->>'start_at')::timestamptz",
+            "end_at" => "end_at = ($2::text::jsonb->>'end_at')::timestamptz",
+            "registration_ends_at" => {
+                "registration_ends_at = ($2::text::jsonb->>'registration_ends_at')::timestamptz"
+            }
+            "allow_teams" => "allow_teams = ($2::text::jsonb->>'allow_teams')::boolean",
+            "max_team_size" => "max_team_size = ($2::text::jsonb->>'max_team_size')::integer",
+            "scoring_mode" => "scoring_mode = $2::text::jsonb->>'scoring_mode'",
+            _ => return Err(PublishError::Invalid),
+        };
+        assignments.push(expression);
+    }
+    if !assignments.is_empty() {
+        assignments.push("updated_at = now()");
+        let query = format!(
+            "UPDATE competitions SET {} WHERE id = ($1::text)::uuid",
+            assignments.join(", ")
+        );
+        tx.execute(&query, &[&request.competition_id, &json])
+            .await
+            .map_err(|_| PublishError::Database)?;
+    }
+    tx.execute(
+        "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address)
+         VALUES (gen_random_uuid(), 'competition.update', ($1::text)::uuid, $2, $3)",
+        &[&request.actor_id, &slug, &request.ip_address],
+    )
+    .await
+    .map_err(|_| PublishError::Database)?;
+    tx.commit().await.map_err(|_| PublishError::Database)?;
+    Ok(CompetitionEditResponse {
+        outcome: "updated".into(),
+    })
+}
+
 pub fn validate(request: &CompetitionCreateRequest) -> Result<(), PublishError> {
     validate_permission(
         &PublishRequest {
@@ -199,5 +355,29 @@ mod tests {
         req.fields
             .insert("max_team_size".into(), Value::Number(50.into()));
         assert!(matches!(validate(&req), Err(PublishError::Invalid)));
+    }
+
+    #[test]
+    fn editing_rechecks_manage_permission_and_field_allowlist() {
+        let mut req = CompetitionEditRequest {
+            competition_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            actor_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            roles: vec!["faculty".into()],
+            ip_address: None,
+            changes: serde_json::from_value(serde_json::json!({
+                "description": null, "title": "Updated", "allow_teams": false
+            }))
+            .unwrap(),
+        };
+        assert!(validate_edit(&req).is_ok());
+        req.roles = vec!["student".into()];
+        assert!(matches!(validate_edit(&req), Err(PublishError::Forbidden)));
+        req.roles = vec!["faculty".into()];
+        req.changes
+            .insert("status".into(), Value::String("live".into()));
+        assert!(matches!(validate_edit(&req), Err(PublishError::Invalid)));
+        req.changes.remove("status");
+        req.changes.insert("title".into(), Value::Null);
+        assert!(matches!(validate_edit(&req), Err(PublishError::Invalid)));
     }
 }

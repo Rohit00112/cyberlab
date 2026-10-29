@@ -11,6 +11,8 @@ from fastapi import HTTPException
 from app.core import competition_transitions, rust_engine
 from app.models.competitions import Competition
 from app.models.users import User
+from app.schemas.competition import CompetitionUpdate
+from app.services import competitions
 from app.services.competitions import auto_transition_competitions, transition
 
 
@@ -152,3 +154,32 @@ async def test_core_unavailable_does_not_change_competition(test_db, monkeypatch
         assert exc.value.status_code == 503
         await db.refresh(competition)
         assert competition.status == "draft"
+
+
+@pytest.mark.asyncio
+async def test_competition_edit_python_fallback_remains_available(test_db, monkeypatch):
+    monkeypatch.setattr(
+        competitions, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    async with test_db() as db:
+        competition, user = await _seed_competition(db)
+        response = await competitions.update_competition(
+            db, competition, CompetitionUpdate(title="Fallback edited"), user
+        )
+        assert response.title == "Fallback edited"
+        await db.refresh(competition)
+        assert competition.title == "Fallback edited"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "http_status"),
+    [("not_found", 404), ("locked", 409), ("unexpected", 503)],
+)
+@pytest.mark.asyncio
+async def test_rust_competition_edit_outcomes_fail_closed(monkeypatch, outcome, http_status):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value={"outcome": outcome}))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.edit_competition_in_rust(
+            str(uuid.uuid4()), str(uuid.uuid4()), ["faculty"], None, {"title": "Edit"}
+        )
+    assert exc.value.status_code == http_status
