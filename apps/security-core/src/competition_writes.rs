@@ -133,14 +133,14 @@ pub async fn create(
                 "INSERT INTO competitions
              (id, slug, title, description, rules, start_at, end_at,
               registration_ends_at, allow_teams, max_team_size, scoring_mode,
-              status, created_by)
+              status, created_by, freeze_leaderboard)
              SELECT gen_random_uuid(), $1, data->>'title', data->>'description',
                 data->>'rules', (data->>'start_at')::timestamptz,
                 (data->>'end_at')::timestamptz,
                 (data->>'registration_ends_at')::timestamptz,
                 COALESCE((data->>'allow_teams')::boolean, false),
                 COALESCE((data->>'max_team_size')::integer, 4),
-                COALESCE(data->>'scoring_mode', 'standard'), 'draft', ($3::text)::uuid
+                COALESCE(data->>'scoring_mode', 'standard'), 'draft', ($3::text)::uuid, false
              FROM (SELECT ($2::text)::jsonb AS data) p
              ON CONFLICT (slug) DO NOTHING RETURNING id::text",
                 &[&slug, &json, &request.actor_id],

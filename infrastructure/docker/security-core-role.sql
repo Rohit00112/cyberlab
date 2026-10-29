@@ -129,5 +129,9 @@ GRANT UPDATE (competency_level, last_updated)
 GRANT SELECT (user_id, skill_id, competency_level)
   ON public.user_skill_profiles TO cyberlab_security_writer;
 GRANT INSERT (id, slug, title, description, rules, start_at, end_at,
-  registration_ends_at, allow_teams, max_team_size, scoring_mode, status, created_by)
+  registration_ends_at, allow_teams, max_team_size, scoring_mode, status,
+  created_by, freeze_leaderboard)
   ON public.competitions TO cyberlab_security_writer;
+-- RETURNING reads id, and ON CONFLICT (slug) checks the arbiter column.
+-- Keep these column-scoped; the writer cannot read competition details.
+GRANT SELECT (id, slug) ON public.competitions TO cyberlab_security_writer;

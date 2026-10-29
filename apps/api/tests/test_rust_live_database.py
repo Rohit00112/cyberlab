@@ -33,11 +33,12 @@ from app.models import (  # noqa: F401 (registers tables)
     AuditLog,
     Challenge,
     ChallengeSkill,
+    Competition,
     Skill,
     Submission,
     User,
 )
-from app.services import challenges, submissions
+from app.services import challenges, competitions, submissions
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -602,6 +603,146 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             assert await db.scalar(
                 select(func.count()).select_from(Challenge)
                 .where(Challenge.slug == "creation-must-rollback")
+            ) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_creation_is_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, _, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=organizer_id, keycloak_sub="competition-test", roles=["faculty"],
+    )
+    payload = {
+        "title": "Autumn CTF", "description": "Atomic creation",
+        "max_team_size": 5, "allow_teams": True,
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            first = await client.post("/api/v1/competitions", json=payload)
+            assert first.status_code == 201, first.text
+            created = first.json()
+            assert created["title"] == payload["title"]
+            assert created["status"] == "draft"
+            assert created["max_team_size"] == 5
+            assert created["allow_teams"] is True
+
+            second = await client.post("/api/v1/competitions", json=payload)
+            assert second.status_code == 201, second.text
+            assert second.json()["slug"].startswith("autumn-ctf-")
+            assert second.json()["id"] != created["id"]
+
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(Competition)
+                .where(Competition.title == payload["title"])
+            ) == 2
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.create",
+                       AuditLog.user_id == organizer_id)
+            ) == 2
+
+        # Exercise the exact restricted columns needed by Rust SQL's
+        # INSERT ... ON CONFLICT ... RETURNING id, not just the owner connection.
+        # The test-only NOLOGIN role, grants and inserted rows all roll back.
+        probe_role = f"cyberlab_comp_probe_{uuid.uuid4().hex[:12]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe_role}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe_role}"'))
+                await db.execute(text(
+                    f'GRANT INSERT (id, slug, title, description, rules, start_at, '
+                    'end_at, registration_ends_at, allow_teams, max_team_size, '
+                    'scoring_mode, status, created_by, freeze_leaderboard) '
+                    f'ON public.competitions TO "{probe_role}"'
+                ))
+                await db.execute(text(
+                    f'GRANT SELECT (id, slug) ON public.competitions TO "{probe_role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON public.audit_logs TO "{probe_role}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe_role}"'))
+                inserted = await db.scalar(text(
+                    "INSERT INTO competitions "
+                    "(id, slug, title, status, created_by, freeze_leaderboard, "
+                    "allow_teams, max_team_size, scoring_mode) "
+                    "VALUES (gen_random_uuid(), 'restricted-ctf', 'Restricted', "
+                    "'draft', :actor_id, false, false, 4, 'standard') "
+                    "ON CONFLICT (slug) DO NOTHING RETURNING id::text"
+                ), {"actor_id": organizer_id})
+                assert inserted is not None
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                    "VALUES (gen_random_uuid(), 'competition.create', "
+                    ":actor_id, 'restricted-ctf')"
+                ), {"actor_id": organizer_id})
+            finally:
+                await db.rollback()
+
+        internal = f"{ctx.rust_url}/v1/competitions/create"
+        rust_payload = {
+            "actor_id": str(organizer_id),
+            "roles": ["student"], "ip_address": None,
+            "slug": "forbidden-ctf", "fields": {"title": "Forbidden CTF"},
+        }
+        async with httpx.AsyncClient(timeout=2) as client:
+            unauthorized = await client.post(internal, json=rust_payload)
+            assert unauthorized.status_code == 401
+            denied = await client.post(
+                internal, json=rust_payload,
+                headers={"x-internal-token": ctx.token},
+            )
+            assert denied.status_code == 403
+            malformed = await client.post(
+                internal, json={
+                    **rust_payload, "roles": ["faculty"],
+                    "fields": {"title": "Invalid", "status": "live"},
+                }, headers={"x-internal-token": ctx.token},
+            )
+            assert malformed.status_code == 400
+
+        # Force audit failure only on this disposable database. The new
+        # competition must not survive without its mandatory audit record.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_competition_create "
+                "CHECK (event <> 'competition.create') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=2) as client:
+            failed = await client.post(
+                internal, json={
+                    **rust_payload, "roles": ["faculty"],
+                    "slug": "audit-must-rollback",
+                    "fields": {"title": "Must rollback"},
+                }, headers={"x-internal-token": ctx.token},
+            )
+            assert failed.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(Competition)
+                .where(Competition.slug == "audit-must-rollback")
             ) == 0
     finally:
         app.dependency_overrides.pop(get_db, None)
