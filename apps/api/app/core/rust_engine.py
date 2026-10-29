@@ -195,6 +195,55 @@ async def change_competition_registration_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
 
 
+async def change_competition_team_in_rust(
+    action: str, competition_id: str, actor_id: str,
+    roles: list[str], ip_address: str | None,
+    *, name: str | None = None, team_id: str | None = None,
+) -> None:
+    if action not in {"create", "join"}:
+        raise HTTPException(status_code=503, detail="Invalid competition team action")
+    result = await _post(f"/v1/competitions/teams/{action}", {
+        "competition_id": competition_id, "actor_id": actor_id,
+        "roles": roles, "ip_address": ip_address,
+        "name": name, "team_id": team_id,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if outcome == "closed":
+        current = result.get("current_status")
+        if current not in {
+            "draft", "registration", "scheduled", "live", "finished", "archived",
+        }:
+            raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+        raise HTTPException(
+            status_code=409, detail=f"Registration is not open (status '{current}').",
+        )
+    if outcome == "disabled":
+        raise HTTPException(status_code=409, detail="Teams are not enabled for this competition.")
+    if outcome == "team_not_found" and action == "join":
+        raise HTTPException(status_code=404, detail="Team not found")
+    if outcome == "not_registered":
+        detail = {
+            "create": "Register for the competition before creating a team.",
+            "join": "Register for the competition before joining a team.",
+        }[action]
+        raise HTTPException(status_code=409, detail=detail)
+    if outcome == "already_on_team":
+        raise HTTPException(
+            status_code=409, detail="You are already on a team in this competition.",
+        )
+    if outcome == "full" and action == "join":
+        maximum = result.get("max_team_size")
+        if type(maximum) is not int or not 1 <= maximum <= 10:
+            raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+        raise HTTPException(status_code=409, detail=f"Team is full (max {maximum}).")
+    if outcome != {"create": "created", "join": "joined"}[action]:
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

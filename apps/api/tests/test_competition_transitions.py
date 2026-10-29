@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 from app.core import competition_transitions, rust_engine
 from app.models.challenges import Challenge
-from app.models.competitions import Competition
+from app.models.competitions import Competition, CompetitionParticipant
 from app.models.users import User
 from app.schemas.competition import CompetitionUpdate
 from app.services import competitions
@@ -265,5 +265,62 @@ async def test_rust_registration_outcomes_are_validated(
     with pytest.raises(HTTPException) as exc:
         await rust_engine.change_competition_registration_in_rust(
             action, str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None
+        )
+    assert exc.value.status_code == http_status
+
+
+@pytest.mark.asyncio
+async def test_competition_teams_python_fallback(test_db, monkeypatch):
+    monkeypatch.setattr(
+        competitions, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    async with test_db() as db:
+        competition, captain = await _seed_competition(db, "registration")
+        competition.allow_teams = True
+        teammate = User(
+            keycloak_sub=f"team-fallback-{uuid.uuid4().hex}", display_name="Teammate",
+        )
+        db.add(teammate)
+        await db.flush()
+        db.add_all([
+            CompetitionParticipant(competition_id=competition.id, user_id=captain.id),
+            CompetitionParticipant(competition_id=competition.id, user_id=teammate.id),
+        ])
+        await db.commit()
+        created = await competitions.create_team(db, competition, "Legacy team", captain)
+        assert created.team_count == 1
+        assert created.me.team.role == "captain"
+        with pytest.raises(HTTPException) as duplicate:
+            await competitions.create_team(db, competition, "Second captain", captain)
+        assert duplicate.value.status_code == 409
+        joined = await competitions.join_team(
+            db, competition, created.me.team.id, teammate
+        )
+        assert joined.me.team.role == "member"
+        assert joined.me.team.member_count == 2
+
+
+@pytest.mark.parametrize(
+    ("action", "response", "http_status"),
+    [
+        ("create", {"outcome": "not_registered"}, 409),
+        ("join", {"outcome": "team_not_found"}, 404),
+        ("join", {"outcome": "already_on_team"}, 409),
+        ("join", {"outcome": "full", "max_team_size": 2}, 409),
+        ("join", {"outcome": "full", "max_team_size": "invalid"}, 503),
+        ("create", {"outcome": "closed", "current_status": "unknown"}, 503),
+        ("create", {"outcome": "unexpected"}, 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_team_outcomes_are_validated(
+    monkeypatch, action, response, http_status
+):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=response))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.change_competition_team_in_rust(
+            action, str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None,
+            name="Team" if action == "create" else None,
+            team_id=str(uuid.uuid4()) if action == "join" else None,
         )
     assert exc.value.status_code == http_status

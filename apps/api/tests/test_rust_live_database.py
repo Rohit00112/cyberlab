@@ -1437,3 +1437,326 @@ async def test_rust_competition_registration_is_atomic_and_api_compatible(
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_team_writes_are_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    student_id, teammate_id, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    current = [CurrentUser(
+        id=student_id, keycloak_sub="team-test", roles=["student"],
+    )]
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: current[0]
+    async with ctx.factory() as db:
+        active = Competition(
+            slug="teams-open", title="Team-enabled CTF", status="registration",
+            allow_teams=True, max_team_size=2, created_by=student_id,
+        )
+        closed = Competition(
+            slug="teams-closed", title="Closed CTF", status="draft",
+            allow_teams=True, created_by=student_id,
+        )
+        disabled = Competition(
+            slug="teams-disabled", title="Solo CTF", status="registration",
+            allow_teams=False, created_by=student_id,
+        )
+        rollback = Competition(
+            slug="teams-rollback", title="Audit rollback CTF",
+            status="scheduled", allow_teams=True, created_by=student_id,
+        )
+        db.add_all([active, closed, disabled, rollback])
+        await db.flush()
+        db.add_all([
+            CompetitionParticipant(competition_id=active.id, user_id=student_id),
+            CompetitionParticipant(competition_id=active.id, user_id=teammate_id),
+            CompetitionParticipant(competition_id=rollback.id, user_id=student_id),
+            CompetitionParticipant(competition_id=rollback.id, user_id=teammate_id),
+        ])
+        await db.commit()
+        active_id, closed_id, disabled_id, rollback_id = (
+            active.id, closed.id, disabled.id, rollback.id,
+        )
+    create_internal = f"{ctx.rust_url}/v1/competitions/teams/create"
+    join_internal = f"{ctx.rust_url}/v1/competitions/teams/join"
+    request_data = {
+        "competition_id": str(active_id), "actor_id": str(student_id),
+        "roles": ["student"], "ip_address": "127.0.0.1",
+        "name": "Blue Team", "team_id": None,
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            created = await client.post(
+                f"/api/v1/competitions/{active_id}/teams",
+                json={"name": " Blue Team "},
+            )
+            assert created.status_code == 200, created.text
+            assert created.json()["team_count"] == 1
+            second_team = await client.post(
+                f"/api/v1/competitions/{active_id}/teams",
+                json={"name": "Duplicate captain"},
+            )
+            assert second_team.status_code == 409
+            assert second_team.json()["detail"] == (
+                "You are already on a team in this competition."
+            )
+            closed_response = await client.post(
+                f"/api/v1/competitions/{closed_id}/teams",
+                json={"name": "Locked team"},
+            )
+            assert closed_response.status_code == 409
+            disabled_response = await client.post(
+                f"/api/v1/competitions/{disabled_id}/teams",
+                json={"name": "Disabled team"},
+            )
+            assert disabled_response.status_code == 409
+
+        async with ctx.factory() as db:
+            team = await db.scalar(select(Team).where(
+                Team.competition_id == active_id
+            ))
+            assert team is not None and team.name == "Blue Team"
+            team_id = team.id
+            captain = await db.scalar(select(TeamMember).where(
+                TeamMember.team_id == team_id,
+                TeamMember.user_id == student_id,
+            ))
+            assert captain is not None and captain.role == "captain"
+            participant = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == active_id,
+                CompetitionParticipant.user_id == student_id,
+            ))
+            assert participant.team_id == team_id
+            assert await db.scalar(select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "team.create")) == 1
+        async with httpx.AsyncClient(timeout=2) as client:
+            assert (await client.post(
+                create_internal, json=request_data
+            )).status_code == 401
+            assert (await client.post(
+                join_internal, json={**request_data, "name": None, "team_id": str(team_id)}
+            )).status_code == 401
+            assert (await client.post(
+                create_internal,
+                json={**request_data, "roles": ["competition_organizer"]},
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 403
+            assert (await client.post(
+                join_internal,
+                json={
+                    **request_data, "name": None, "team_id": str(team_id),
+                    "roles": ["competition_organizer"],
+                },
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 403
+            assert (await client.post(
+                create_internal, json={**request_data, "name": "  "},
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 400
+            assert (await client.post(
+                join_internal, json={**request_data, "team_id": "invalid", "name": None},
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 400
+
+        current[0] = CurrentUser(
+            id=teammate_id, keycloak_sub="team-test-2", roles=["student"],
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            joined = await client.post(
+                f"/api/v1/competitions/{active_id}/teams/{team_id}/join",
+            )
+            assert joined.status_code == 200, joined.text
+            assert joined.json()["team_count"] == 1
+            again = await client.post(
+                f"/api/v1/competitions/{active_id}/teams/{team_id}/join",
+            )
+            assert again.status_code == 409
+            assert again.json()["detail"] == (
+                "You are already on a team in this competition."
+            )
+            different_event = await client.post(
+                f"/api/v1/competitions/{rollback_id}/teams/{team_id}/join",
+            )
+            assert different_event.status_code == 404
+            assert different_event.json()["detail"] == "Team not found"
+        async with ctx.factory() as db:
+            member = await db.scalar(select(TeamMember).where(
+                TeamMember.team_id == team_id,
+                TeamMember.user_id == teammate_id,
+            ))
+            assert member is not None and member.role == "member"
+            participant = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == active_id,
+                CompetitionParticipant.user_id == teammate_id,
+            ))
+            assert participant.team_id == team_id
+            assert await db.scalar(select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "team.join")) == 1
+
+        async with ctx.factory() as db:
+            third = User(
+                keycloak_sub=f"team-unregistered-{uuid.uuid4().hex}",
+                display_name="Third teammate",
+            )
+            db.add(third)
+            await db.commit()
+            third_id = third.id
+        current[0] = CurrentUser(
+            id=third_id, keycloak_sub="team-test-3", roles=["student"],
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            not_registered = await client.post(
+                f"/api/v1/competitions/{active_id}/teams/{team_id}/join",
+            )
+            assert not_registered.status_code == 409
+            assert "Register for the competition" in not_registered.json()["detail"]
+        async with ctx.factory() as db:
+            db.add(CompetitionParticipant(
+                competition_id=active_id, user_id=third_id,
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            full = await client.post(
+                f"/api/v1/competitions/{active_id}/teams/{team_id}/join",
+            )
+            assert full.status_code == 409
+            assert full.json()["detail"] == "Team is full (max 2)."
+
+        # A disposable NOLOGIN role proves the SQL needs only column-scoped
+        # privileges from security-core-role.sql.
+        probe = f"cyberlab_teams_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                for statement in (
+                    "SELECT (id, slug, status, allow_teams, max_team_size) ON competitions",
+                    "UPDATE (title) ON competitions",
+                    "SELECT (id, competition_id, user_id, team_id) ON competition_participants",
+                    "UPDATE (team_id) ON competition_participants",
+                    "SELECT (id, competition_id, name) ON teams",
+                    "INSERT (id, competition_id, name, created_by) ON teams",
+                    "SELECT (team_id, user_id) ON team_members",
+                    "INSERT (id, team_id, user_id, role) ON team_members",
+                    "INSERT (id, event, user_id, target_id, ip_address, details) ON audit_logs",
+                ):
+                    await db.execute(text(f'GRANT {statement} TO "{probe}"'))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                await db.execute(text(
+                    "SELECT slug, status, allow_teams, max_team_size FROM competitions "
+                    "WHERE id=:cid FOR UPDATE"
+                ), {"cid": rollback_id})
+                await db.execute(text(
+                    "SELECT team_id::text FROM competition_participants "
+                    "WHERE competition_id=:cid AND user_id=:uid FOR UPDATE"
+                ), {"cid": rollback_id, "uid": student_id})
+                probe_team = await db.scalar(text(
+                    "INSERT INTO teams (id, competition_id, name, created_by) "
+                    "VALUES (gen_random_uuid(), :cid, 'Probe Team', :uid) RETURNING id::text"
+                ), {"cid": rollback_id, "uid": student_id})
+                assert probe_team is not None
+                await db.execute(text(
+                    "INSERT INTO team_members (id, team_id, user_id, role) "
+                    "VALUES (gen_random_uuid(), CAST(:tid AS uuid), :uid, 'captain')"
+                ), {"tid": probe_team, "uid": student_id})
+                await db.execute(text(
+                    "UPDATE competition_participants SET team_id=CAST(:tid AS uuid) "
+                    "WHERE competition_id=:cid AND user_id=:uid"
+                ), {"tid": probe_team, "cid": rollback_id, "uid": student_id})
+                assert await db.scalar(text(
+                    "SELECT COUNT(*) FROM team_members WHERE team_id=CAST(:tid AS uuid)"
+                ), {"tid": probe_team}) == 1
+                await db.execute(text(
+                    "INSERT INTO audit_logs "
+                    "(id, event, user_id, target_id, details) "
+                    "VALUES (gen_random_uuid(), 'team.create', :uid, 'Probe Team', "
+                    """CAST('{"competition":"teams-rollback"}' AS jsonb))"""
+                ), {"uid": student_id})
+            finally:
+                await db.rollback()
+
+        # Force audit failure and assert all three team mutations roll back.
+        current[0] = CurrentUser(
+            id=student_id, keycloak_sub="team-test", roles=["student"],
+        )
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_team_create "
+                "CHECK (event <> 'team.create') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed_create = await client.post(
+                f"/api/v1/competitions/{rollback_id}/teams",
+                json={"name": "Must rollback"},
+            )
+            assert failed_create.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(Team)
+                .where(Team.competition_id == rollback_id)) == 0
+            member = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == rollback_id,
+                CompetitionParticipant.user_id == student_id,
+            ))
+            assert member.team_id is None
+            await db.execute(text("ALTER TABLE audit_logs DROP CONSTRAINT block_team_create"))
+            precreated = Team(
+                competition_id=rollback_id, name="Join rollback", created_by=teammate_id,
+            )
+            db.add(precreated)
+            await db.flush()
+            db.add(TeamMember(
+                team_id=precreated.id, user_id=teammate_id, role="captain",
+            ))
+            other = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == rollback_id,
+                CompetitionParticipant.user_id == teammate_id,
+            ))
+            other.team_id = precreated.id
+            await db.commit()
+            precreated_id = precreated.id
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_team_join "
+                "CHECK (event <> 'team.join') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed_join = await client.post(
+                f"/api/v1/competitions/{rollback_id}/teams/{precreated_id}/join",
+            )
+            assert failed_join.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(TeamMember)
+                .where(TeamMember.team_id == precreated_id)) == 1
+            participant = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == rollback_id,
+                CompetitionParticipant.user_id == student_id,
+            ))
+            assert participant.team_id is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)

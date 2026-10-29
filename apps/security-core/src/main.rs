@@ -22,6 +22,9 @@ use cyberlab_security_core::competition_participants::{
     register as register_participant, unregister as unregister_participant, ParticipantRequest,
     ParticipantResponse,
 };
+use cyberlab_security_core::competition_teams::{
+    create as create_team, join as join_team, TeamRequest, TeamResponse,
+};
 use cyberlab_security_core::competition_writes::{
     create as create_competition_record, edit as edit_competition_record, CompetitionCreateRequest,
     CompetitionCreateResponse, CompetitionEditRequest, CompetitionEditResponse,
@@ -431,6 +434,46 @@ async fn unregister_competition_participant_route(
     }
 }
 
+async fn create_competition_team_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<TeamRequest>,
+) -> Result<Json<TeamResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match create_team(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn join_competition_team_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<TeamRequest>,
+) -> Result<Json<TeamResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match join_team(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -492,6 +535,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/competitions/unregister",
             post(unregister_competition_participant_route),
+        )
+        .route(
+            "/v1/competitions/teams/create",
+            post(create_competition_team_route),
+        )
+        .route(
+            "/v1/competitions/teams/join",
+            post(join_competition_team_route),
         )
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))

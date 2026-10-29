@@ -157,3 +157,12 @@ GRANT DELETE ON public.competition_participants TO cyberlab_security_writer;
 -- Unregister must also revoke the participant's existing team membership.
 GRANT SELECT (team_id, user_id) ON public.team_members TO cyberlab_security_writer;
 GRANT DELETE ON public.team_members TO cyberlab_security_writer;
+-- Team creation and joining: serialize on the competition, recheck eligibility,
+-- assign membership, and commit the corresponding audit in one transaction.
+GRANT SELECT (allow_teams, max_team_size) ON public.competitions TO cyberlab_security_writer;
+GRANT SELECT (id, competition_id, name) ON public.teams TO cyberlab_security_writer;
+GRANT INSERT (id, competition_id, name, created_by)
+  ON public.teams TO cyberlab_security_writer;
+GRANT INSERT (id, team_id, user_id, role)
+  ON public.team_members TO cyberlab_security_writer;
+GRANT UPDATE (team_id) ON public.competition_participants TO cyberlab_security_writer;

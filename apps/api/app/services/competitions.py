@@ -396,11 +396,30 @@ async def create_team(
             status_code=status.HTTP_409_CONFLICT,
             detail="Teams are not enabled for this competition.",
         )
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import change_competition_team_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await change_competition_team_in_rust(
+            "create", str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            name=name,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     participant = await _participant(db, competition.id, user.id)
     if participant is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Register for the competition before creating a team.",
+        )
+    if participant.team_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You are already on a team in this competition.",
         )
     team = Team(competition_id=competition.id, name=name.strip(), created_by=user.id)
     db.add(team)
@@ -416,6 +435,7 @@ async def create_team(
         details={"competition": competition.slug},
         request=request,
     )
+    await db.refresh(competition)
     return await _to_out(db, competition, user=user)
 
 
@@ -432,6 +452,20 @@ async def join_team(
             status_code=status.HTTP_409_CONFLICT,
             detail="Teams are not enabled for this competition.",
         )
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import change_competition_team_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await change_competition_team_in_rust(
+            "join", str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            team_id=str(team_id),
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     team = await db.get(Team, team_id)
     if team is None or team.competition_id != competition.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
@@ -468,6 +502,7 @@ async def join_team(
         details={"competition": competition.slug},
         request=request,
     )
+    await db.refresh(competition)
     return await _to_out(db, competition, user=user)
 
 
