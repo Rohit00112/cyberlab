@@ -13,7 +13,8 @@ services:
   security-core-role-init:
     profiles: [maintenance]
     image: postgres:16-alpine
-    command: ["psql", "-h", "postgres", "-U", "${POSTGRES_USER}", "-d", "cyberlab", "-f", "/setup/security-core-role.sql"]
+    # Roll back every grant if a permission or schema check fails.
+    command: ["psql", "-X", "--single-transaction", "-v", "ON_ERROR_STOP=1", "-h", "postgres", "-U", "${POSTGRES_USER}", "-d", "cyberlab", "-f", "/setup/security-core-role.sql"]
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       SECURITY_CORE_DB_PASSWORD: ${SECURITY_CORE_DB_PASSWORD:?Set a URL-safe password for Rust's read-only DB role}
@@ -30,8 +31,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: cyberlab
-    volumes:
+    volumes: !override
       - pgdata:/var/lib/postgresql/data
+      # Fresh production volumes initialize only the Keycloak database.
+      # The developer-only cyberlab_test database must never be created here.
+      - ./infrastructure/docker/postgres-init/01-create-keycloak-db.sql:/docker-entrypoint-initdb.d/01-create-keycloak-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
     ports: !override []      # never expose DB on the host in prod
 
   redis:
@@ -51,7 +57,14 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_HTTP_PORT: 8080
       KC_PROXY_HEADERS: xforwarded
-      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT: "true"
+    healthcheck:
+      # Probe the configured public host, not dev's localhost Host header.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /realms/cyberlab/.well-known/openid-configuration HTTP/1.0\\r\\nHost: %s\\r\\n\\r\\n\" \"$$KC_HOSTNAME\" >&3; grep -Eq \"^HTTP/[0-9.]+ 200\" <&3'",
+        ]
     volumes:
       - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
       - ./infrastructure/keycloak/themes/cyberlab:/opt/keycloak/themes/cyberlab:ro

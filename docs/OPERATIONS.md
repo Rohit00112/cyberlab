@@ -4,16 +4,39 @@ Production-oriented notes for IIC CyberLab (Phase 7, PRD §47–§53).
 
 ## Deployment
 
-Run the production stack (uses `docker-compose.prod.yml`, which overrides the dev
-compose and publishes **only** Caddy ports 80/443):
+Run the production stack using `docker-compose.prod.yml`, which overrides the dev
+compose and publishes **only** Caddy ports 80/443. On a fresh installation,
+apply schema migrations and initialize the restricted Rust database roles
+before starting the API and Rust service:
 
 ```bash
 # 1. Prepare a production .env from the template (fill REAL secrets)
 cp .env.production.example .env
 
-# 2. Boot the production stack
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# 2. Replace cyberlab.example.org/auth.example.org in the production Compose
+#    file and Caddyfile, and in .env values such as CORS_ORIGINS.
+
+# 3. Build the application images, then start the infrastructure services.
+docker compose -f docker-compose.yml -f docker-compose.prod.yml build api security-core web celery-worker
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis keycloak
+
+# 4. Run Alembic migrations without triggering the API's Rust health dependency.
+docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --no-deps api alembic upgrade head
+
+# 5. Create or refresh the limited Rust read/write roles and grants.
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile maintenance run --rm security-core-role-init
+
+# 6. Start the rest of the stack.
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
+
+Re-run step 5 after schema migrations that add or change fields accessed by
+Rust, before restarting the Rust service. The production PostgreSQL bootstrap
+creates the Keycloak database using `POSTGRES_USER` as its owner and skips the
+developer-only `cyberlab_test` database. Changing `POSTGRES_USER` does not
+rename roles inside an already initialized persistent PostgreSQL volume.
+Existing volumes also retain any `cyberlab_test` database created before this
+change; inspect those separately before deciding whether to remove them.
 
 What production mode enforces automatically:
 
@@ -27,9 +50,12 @@ What production mode enforces automatically:
 
 ### Keycloak in production
 
-Keycloak runs in `start` mode (not `start-dev`) with `KC_PROXY_HEADERS=xforwarded`
-behind Caddy at `auth.example.org`. Update hostnames in `Caddyfile` and the
-`/realms/cyberlab` URLs in `.env` to your real domain.
+Keycloak runs in `start` mode with forwarded proxy headers and a strict public
+hostname behind Caddy. Replace every example hostname in
+`docker-compose.prod.yml`, `infrastructure/caddy/Caddyfile`, and the relevant
+production `.env` values before deployment. Configure the public API, frontend
+and Keycloak URLs consistently; changing `.env` alone does not change the
+hardcoded production Compose or Caddy hostnames.
 
 ## Observability (PRD §47)
 

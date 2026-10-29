@@ -3,7 +3,7 @@ name = "cyberlab-security-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Internal Rust flag verification and scoring service for IIC CyberLab"
+description = "Internal Rust security policy and transactional challenge service for IIC CyberLab"
 
 [dependencies]
 axum = "0.8"
