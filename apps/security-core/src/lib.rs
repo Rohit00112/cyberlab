@@ -7,6 +7,7 @@ pub mod creation;
 pub mod editing;
 pub mod leaderboard;
 pub mod publishing;
+pub mod solves;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;

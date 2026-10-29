@@ -107,3 +107,24 @@ GRANT SELECT (status) ON public.challenges TO cyberlab_security_writer;
 GRANT INSERT (id, challenge_id, user_id, is_correct, earned_points)
   ON public.submissions TO cyberlab_security_writer;
 GRANT INSERT (details) ON public.audit_logs TO cyberlab_security_writer;
+-- Correct solve: revalidate flag and lab state, then atomically update the
+-- submission ledger, score ledger, competency profiles and audit record.
+GRANT SELECT (id, is_active) ON public.users TO cyberlab_security_writer;
+GRANT SELECT (points, hint_penalty, difficulty_score, flag_hash)
+  ON public.challenges TO cyberlab_security_writer;
+GRANT SELECT (id, user_id, challenge_id, status, flag_hash, expires_at)
+  ON public.lab_instances TO cyberlab_security_writer;
+GRANT SELECT (user_id, challenge_id) ON public.hint_reveals TO cyberlab_security_writer;
+GRANT SELECT (id, challenge_id, user_id, is_correct)
+  ON public.submissions TO cyberlab_security_writer;
+GRANT UPDATE (earned_points) ON public.submissions TO cyberlab_security_writer;
+GRANT INSERT (id, user_id, challenge_id, event_type, points, current_total, is_first_blood, is_frozen)
+  ON public.score_events TO cyberlab_security_writer;
+GRANT SELECT (user_id, competition_id, points) ON public.score_events TO cyberlab_security_writer;
+GRANT SELECT (challenge_id, skill_id) ON public.challenge_skills TO cyberlab_security_writer;
+GRANT INSERT (id, user_id, skill_id, competency_level)
+  ON public.user_skill_profiles TO cyberlab_security_writer;
+GRANT UPDATE (competency_level, last_updated)
+  ON public.user_skill_profiles TO cyberlab_security_writer;
+GRANT SELECT (user_id, skill_id, competency_level)
+  ON public.user_skill_profiles TO cyberlab_security_writer;

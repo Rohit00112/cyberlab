@@ -22,6 +22,9 @@ use cyberlab_security_core::leaderboard::{
 use cyberlab_security_core::publishing::{
     delete, publish, PublishError, PublishRequest, PublishResponse,
 };
+use cyberlab_security_core::solves::{
+    record as record_correct_solve, CorrectSolveRequest, CorrectSolveResponse,
+};
 use cyberlab_security_core::{
     score, validate_lab_transition, verify_flag, LabTransitionRequest, LabTransitionResponse,
     ScoreRequest, ScoreResponse, VerifyFlagRequest, VerifyFlagResponse,
@@ -276,6 +279,26 @@ async fn incorrect_submission(
     }
 }
 
+async fn correct_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CorrectSolveRequest>,
+) -> Result<Json<CorrectSolveResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match record_correct_solve(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -324,6 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/challenges/edit", post(edit_challenge))
         .route("/v1/challenges/create", post(create_challenge))
         .route("/v1/submissions/incorrect", post(incorrect_submission))
+        .route("/v1/submissions/correct", post(correct_submission))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(AppState {
             token: Arc::new(token),

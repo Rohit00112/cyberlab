@@ -91,7 +91,7 @@ async def test_rust_scoring_failure_does_not_record_a_solve(test_db, monkeypatch
         "app.services.submissions.rust_verify_flag", AsyncMock(return_value=True)
     )
     monkeypatch.setattr(
-        "app.services.scoring.calculate_score",
+        "app.core.rust_engine.record_correct_solve",
         AsyncMock(side_effect=HTTPException(status_code=503, detail="Rust unavailable")),
     )
 
@@ -107,10 +107,10 @@ async def test_rust_scoring_failure_does_not_record_a_solve(test_db, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_rust_score_recorded_atomically_with_submission(test_db, monkeypatch):
+async def test_python_fallback_score_recorded_atomically_with_submission(test_db, monkeypatch):
     user_id, challenge_id = await _seed_user_and_challenge(test_db)
     def settings():
-        return SimpleNamespace(rust_core_url="http://127.0.0.1:8081")
+        return SimpleNamespace(rust_core_url="")
     monkeypatch.setattr("app.services.submissions.get_settings", settings)
     monkeypatch.setattr("app.services.scoring.get_settings", settings)
     monkeypatch.setattr(

@@ -419,6 +419,132 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 .where(AuditLog.event == "challenge.update", AuditLog.user_id == u1)
             ) == 1
 
+        # Correct solves must persist the submission, score ledger, competency
+        # and audit together, and never award a second solve.
+        async with ctx.factory() as db:
+            solve_challenge = Challenge(
+                slug=f"rust-solve-{uuid.uuid4().hex}",
+                title="Rust solve", description="Atomic score",
+                category="Linux", difficulty="beginner",
+                points=120, hint_penalty=20, status="published",
+                flag_hash=hash_flag("IIC{atomic-solve}"),
+            )
+            db.add(solve_challenge)
+            await db.flush()
+            solve_id = solve_challenge.id
+            skill = await db.scalar(select(Skill).where(Skill.slug == "linux"))
+            db.add(ChallengeSkill(challenge_id=solve_id, skill_id=skill.id))
+            await db.commit()
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id=u2, keycloak_sub="solve-test", roles=["student"]
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            solve_path = f"/api/v1/challenges/{solve_id}/submissions"
+            solve = await client.post(solve_path, json={"flag": "IIC{atomic-solve}"})
+            assert solve.status_code == 201, solve.text
+            assert solve.json()["points"] == 120
+            repeat = await client.post(solve_path, json={"flag": "IIC{atomic-solve}"})
+            assert repeat.status_code == 201
+            assert repeat.json()["already_solved"] is True
+            assert repeat.json()["points"] == 0
+        async with ctx.factory() as db:
+            from app.models import ScoreEvent, UserSkillProfile
+            assert await db.scalar(
+                select(func.count()).select_from(Submission)
+                .where(Submission.user_id == u2, Submission.challenge_id == solve_id,
+                       Submission.is_correct.is_(True))
+            ) == 1
+            event = await db.scalar(
+                select(ScoreEvent).where(
+                    ScoreEvent.user_id == u2, ScoreEvent.challenge_id == solve_id
+                )
+            )
+            assert event.points == 120 and event.is_first_blood
+            profile = await db.scalar(
+                select(UserSkillProfile).where(
+                    UserSkillProfile.user_id == u2, UserSkillProfile.skill_id == skill.id
+                )
+            )
+            assert profile.competency_level == 5.0
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.user_id == u2, AuditLog.event == "submission.solve")
+            ) == 1
+        async with httpx.AsyncClient(timeout=2) as client:
+            solve_url = f"{ctx.rust_url}/v1/submissions/correct"
+            solve_payload = {
+                "challenge_id": str(solve_id), "user_id": str(u1),
+                "roles": ["student"], "ip_address": None,
+                "candidate": "IIC{atomic-solve}", "lab_id": None,
+            }
+            denied_solve = await client.post(
+                solve_url, json={**solve_payload, "roles": []},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert denied_solve.status_code == 403
+            stale = await client.post(
+                solve_url, json={**solve_payload, "candidate": "IIC{wrong}"},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert stale.status_code == 200
+            assert stale.json()["outcome"] == "stale_flag"
+
+            # Concurrent requests from the same user must award exactly once.
+            concurrent = await asyncio.gather(*(
+                client.post(
+                    solve_url, json={
+                        **solve_payload, "user_id": str(u1),
+                    }, headers={"x-internal-token": ctx.token},
+                ) for _ in range(2)
+            ))
+            assert all(reply.status_code == 200 for reply in concurrent)
+            assert {reply.json()["outcome"] for reply in concurrent} == {
+                "solved", "already_solved"
+            }
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(Submission)
+                .where(Submission.challenge_id == solve_id, Submission.user_id == u1,
+                       Submission.is_correct.is_(True))
+            ) == 1
+            assert await db.scalar(
+                select(func.count()).select_from(ScoreEvent)
+                .where(ScoreEvent.challenge_id == solve_id, ScoreEvent.user_id == u1)
+            ) == 1
+
+        # A broken audit INSERT must abort the entire solve transaction.
+        async with ctx.factory() as db:
+            rollback_user = User(
+                keycloak_sub=f"rollback-solve-{uuid.uuid4().hex}", display_name="Rollback"
+            )
+            db.add(rollback_user)
+            await db.flush()
+            rollback_user_id = rollback_user.id
+            await db.commit()
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT audit_block_solve "
+                "CHECK (event <> 'submission.solve') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=2) as client:
+            failed_solve = await client.post(
+                solve_url, json={**solve_payload, "user_id": str(rollback_user_id)},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert failed_solve.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(Submission)
+                .where(Submission.challenge_id == solve_id, Submission.user_id == rollback_user_id,
+                       Submission.is_correct.is_(True))
+            ) == 0
+            assert await db.scalar(
+                select(func.count()).select_from(ScoreEvent)
+                .where(ScoreEvent.challenge_id == solve_id, ScoreEvent.user_id == rollback_user_id)
+            ) == 0
+
         # Force an audit-insert failure in the disposable DB. The corresponding
         # challenge mutation must roll back, rather than publish without audit.
         async with ctx.factory() as db:

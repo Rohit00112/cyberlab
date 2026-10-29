@@ -76,6 +76,26 @@ async def record_incorrect_attempt(
         raise HTTPException(status_code=503, detail="Invalid Rust security core response")
 
 
+async def record_correct_solve(
+    challenge_id: str, user_id: str, roles: list[str], ip_address: str | None,
+    candidate: str, lab_id: str | None,
+) -> tuple[str, int]:
+    result = await _post("/v1/submissions/correct", {
+        "challenge_id": challenge_id, "user_id": user_id, "roles": roles,
+        "ip_address": ip_address, "candidate": candidate, "lab_id": lab_id,
+    })
+    outcome, points = result.get("outcome"), result.get("points")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if outcome == "lab_unavailable":
+        raise HTTPException(status_code=409, detail="Lab session is unavailable")
+    if outcome == "stale_flag":
+        raise HTTPException(status_code=409, detail="Flag has changed; retry submission")
+    if outcome not in {"solved", "already_solved"} or type(points) is not int or points < 0:
+        raise HTTPException(status_code=503, detail="Invalid Rust security core response")
+    return outcome, points
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

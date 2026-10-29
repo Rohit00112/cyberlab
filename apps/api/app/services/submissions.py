@@ -115,6 +115,26 @@ async def submit_flag(
         await refresh_challenge_difficulty_after_submission(db, challenge_id)
         await db.commit()
         return FlagSubmitResult(correct=False, points=0, message="Incorrect flag")
+    if correct and get_settings().rust_core_url:
+        from app.core.rust_engine import record_correct_solve
+        from app.services.badges import grant_eligible_badges
+        from app.services.recommendations import refresh_challenge_difficulty_after_submission
+
+        challenge_id = challenge.id
+        await db.rollback()
+        outcome, points = await record_correct_solve(
+            str(challenge_id), str(user_id), roles or [],
+            request.client.host if request and request.client else None,
+            flag, str(lab_id) if lab_id else None,
+        )
+        if outcome == "already_solved":
+            return FlagSubmitResult(
+                correct=True, points=0, already_solved=True, message="Already solved"
+            )
+        await grant_eligible_badges(db, user_id, request=request)
+        await refresh_challenge_difficulty_after_submission(db, challenge_id)
+        await db.commit()
+        return FlagSubmitResult(correct=True, points=points, message="Correct flag!")
 
     if correct:
         existing = await db.scalar(
