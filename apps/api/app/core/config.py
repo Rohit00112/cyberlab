@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     lab_memory_limit_mb: int = 512
     lab_pids_limit: int = 256
 
+    # WireGuard client configuration (development preview only). Peer provisioning
+    # and revocation on the VPN server are not implemented by this application.
+    wireguard_endpoint: str = ""
+    wireguard_server_public_key: str = ""
+
     # Research platform (Phase 6, PRD §70-§72)
     research_data_dir: str = "data/research"
     research_dataset_expiry_days: int = 30
