@@ -38,6 +38,12 @@ rename roles inside an already initialized persistent PostgreSQL volume.
 Existing volumes also retain any `cyberlab_test` database created before this
 change; inspect those separately before deciding whether to remove them.
 
+The frontend embeds `NEXT_PUBLIC_*` settings when `pnpm build` runs. Update
+`web.build.args` and the matching `web.environment` values in the production
+Compose file to the real public origins before building. Rebuild the web image
+after any change to those public URLs; restarting a previously built image
+cannot change the browser bundle.
+
 What production mode enforces automatically:
 
 - `ENVIRONMENT=production` → FastAPI hides `/docs` & `/openapi.json` and the

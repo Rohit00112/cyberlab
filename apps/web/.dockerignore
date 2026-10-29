@@ -1,0 +1,9 @@
+node_modules
+.pnpm-store
+.next
+.env*
+.git
+.DS_Store
+*.tsbuildinfo
+coverage
+dist

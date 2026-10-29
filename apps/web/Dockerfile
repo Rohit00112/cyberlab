@@ -19,6 +19,18 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC values are embedded in the browser bundle at build time.
+# Compose must supply the deployment origins during the image build.
+ARG NEXT_PUBLIC_API_BASE=http://localhost:8000/api/v1
+ARG NEXT_PUBLIC_KEYCLOAK_ISSUER=http://localhost:8080/realms/cyberlab
+ARG NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=web
+ARG NEXT_PUBLIC_WEB_ORIGIN=http://localhost:3000
+ARG KEYCLOAK_INTERNAL_ISSUER=http://keycloak:8080/realms/cyberlab
+ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE \
+    NEXT_PUBLIC_KEYCLOAK_ISSUER=$NEXT_PUBLIC_KEYCLOAK_ISSUER \
+    NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=$NEXT_PUBLIC_KEYCLOAK_CLIENT_ID \
+    NEXT_PUBLIC_WEB_ORIGIN=$NEXT_PUBLIC_WEB_ORIGIN \
+    KEYCLOAK_INTERNAL_ISSUER=$KEYCLOAK_INTERNAL_ISSUER
 RUN pnpm build
 
 FROM base AS prod

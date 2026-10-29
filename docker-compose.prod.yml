@@ -105,6 +105,13 @@ services:
     build:
       context: ./apps/web
       target: prod
+      args:
+        # These must match the runtime public origins below.
+        NEXT_PUBLIC_API_BASE: https://cyberlab.example.org/api/v1
+        NEXT_PUBLIC_KEYCLOAK_ISSUER: https://auth.example.org/realms/cyberlab
+        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: web
+        NEXT_PUBLIC_WEB_ORIGIN: https://cyberlab.example.org
+        KEYCLOAK_INTERNAL_ISSUER: http://keycloak:8080/realms/cyberlab
     command: !override ["node", "server.js"]
     environment:
       NEXT_PUBLIC_API_BASE: https://cyberlab.example.org/api/v1
