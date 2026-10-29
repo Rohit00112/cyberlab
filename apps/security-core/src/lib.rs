@@ -1,4 +1,5 @@
 //! Pure, auditable security calculations. DB access and access control stay in the API.
+pub mod attempts;
 pub mod authorization;
 pub mod catalog;
 pub mod competition;

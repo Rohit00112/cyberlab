@@ -21,6 +21,25 @@ GRANT USAGE ON SCHEMA public TO cyberlab_security_core;
 
 -- Reapply grants safely if the script runs after a schema migration.
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cyberlab_security_core;
+-- Table-level REVOKE does not remove prior column-level grants. Reset these
+-- before granting the current allowlist, including on subsequent deployments.
+DO $$
+DECLARE column_grant record;
+BEGIN
+  FOR column_grant IN
+    SELECT n.nspname, c.relname, a.attname, acl.privilege_type
+    FROM pg_class AS c
+    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+    JOIN pg_attribute AS a ON a.attrelid = c.oid
+    CROSS JOIN LATERAL aclexplode(a.attacl) AS acl
+    WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
+      AND acl.grantee = 'cyberlab_security_core'::regrole
+  LOOP
+    EXECUTE format('REVOKE %s (%I) ON TABLE %I.%I FROM cyberlab_security_core',
+      column_grant.privilege_type, column_grant.attname,
+      column_grant.nspname, column_grant.relname);
+  END LOOP;
+END $$;
 GRANT SELECT (id, status, category, difficulty, points, created_at)
   ON public.challenges TO cyberlab_security_core;
 GRANT SELECT (id, display_name)
@@ -47,6 +66,23 @@ ALTER ROLE cyberlab_security_writer
 GRANT CONNECT ON DATABASE cyberlab TO cyberlab_security_writer;
 GRANT USAGE ON SCHEMA public TO cyberlab_security_writer;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cyberlab_security_writer;
+DO $$
+DECLARE column_grant record;
+BEGIN
+  FOR column_grant IN
+    SELECT n.nspname, c.relname, a.attname, acl.privilege_type
+    FROM pg_class AS c
+    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+    JOIN pg_attribute AS a ON a.attrelid = c.oid
+    CROSS JOIN LATERAL aclexplode(a.attacl) AS acl
+    WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
+      AND acl.grantee = 'cyberlab_security_writer'::regrole
+  LOOP
+    EXECUTE format('REVOKE %s (%I) ON TABLE %I.%I FROM cyberlab_security_writer',
+      column_grant.privilege_type, column_grant.attname,
+      column_grant.nspname, column_grant.relname);
+  END LOOP;
+END $$;
 GRANT SELECT (id, slug, flag_hash) ON public.challenges TO cyberlab_security_writer;
 GRANT UPDATE (status, version, updated_at) ON public.challenges TO cyberlab_security_writer;
 GRANT SELECT (version) ON public.challenges TO cyberlab_security_writer;
@@ -64,4 +100,10 @@ GRANT INSERT (id, slug, title, description, instructions, category,
   author_id, status, version) ON public.challenges TO cyberlab_security_writer;
 GRANT SELECT (id, slug, name) ON public.skills TO cyberlab_security_writer;
 GRANT DELETE, INSERT ON public.challenge_skills TO cyberlab_security_writer;
+-- The Rust skill sync deletes links using this WHERE column.
+GRANT SELECT (challenge_id) ON public.challenge_skills TO cyberlab_security_writer;
 GRANT SELECT (id) ON public.challenges TO cyberlab_security_writer;
+GRANT SELECT (status) ON public.challenges TO cyberlab_security_writer;
+GRANT INSERT (id, challenge_id, user_id, is_correct, earned_points)
+  ON public.submissions TO cyberlab_security_writer;
+GRANT INSERT (details) ON public.audit_logs TO cyberlab_security_writer;

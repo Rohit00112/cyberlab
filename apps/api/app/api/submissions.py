@@ -57,6 +57,7 @@ async def submit_flag(
         can_edit=await challenge_service.can_edit(user.roles),
         lab_id=payload.lab_id,
         request=request,
+        roles=user.roles,
     )
     return result
 

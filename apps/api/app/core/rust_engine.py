@@ -63,6 +63,19 @@ async def verify_flag(candidate: str, expected_sha256: str) -> bool:
     return result["correct"]
 
 
+async def record_incorrect_attempt(
+    challenge_id: str, user_id: str, roles: list[str], ip_address: str | None
+) -> None:
+    result = await _post("/v1/submissions/incorrect", {
+        "challenge_id": challenge_id, "user_id": user_id,
+        "roles": roles, "ip_address": ip_address,
+    })
+    if result.get("outcome") == "not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if result.get("outcome") != "recorded":
+        raise HTTPException(status_code=503, detail="Invalid Rust security core response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

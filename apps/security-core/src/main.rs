@@ -4,6 +4,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use cyberlab_security_core::attempts::{
+    record as record_incorrect_attempt, IncorrectAttemptRequest, IncorrectAttemptResponse,
+};
 use cyberlab_security_core::authorization::{
     authorize, AuthorizationRequest, AuthorizationResponse,
 };
@@ -253,6 +256,26 @@ async fn create_challenge(
     }
 }
 
+async fn incorrect_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<IncorrectAttemptRequest>,
+) -> Result<Json<IncorrectAttemptResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match record_incorrect_attempt(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -300,6 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/challenges/delete", post(delete_challenge))
         .route("/v1/challenges/edit", post(edit_challenge))
         .route("/v1/challenges/create", post(create_challenge))
+        .route("/v1/submissions/incorrect", post(incorrect_submission))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(AppState {
             token: Arc::new(token),

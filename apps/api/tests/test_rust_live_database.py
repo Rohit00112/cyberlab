@@ -311,9 +311,34 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 headers={"x-internal-token": ctx.token},
             )
             assert forbidden_create.status_code == 403
+            incorrect_url = f"{ctx.rust_url}/v1/submissions/incorrect"
+            attempt_payload = {
+                "challenge_id": str(c1), "user_id": str(u2),
+                "roles": ["student"], "ip_address": "127.0.0.1",
+            }
+            forbidden_attempt = await client.post(
+                incorrect_url, json={**attempt_payload, "roles": []},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden_attempt.status_code == 403
+            persisted_attempt = await client.post(
+                incorrect_url, json=attempt_payload,
+                headers={"x-internal-token": ctx.token},
+            )
+            assert persisted_attempt.status_code == 200
+            assert persisted_attempt.json()["outcome"] == "recorded"
         async with ctx.factory() as db:
             published = await db.get(Challenge, c1)
             assert published.version == 3
+            assert await db.scalar(
+                select(func.count()).select_from(Submission)
+                .where(Submission.challenge_id == c1, Submission.user_id == u2,
+                       Submission.is_correct.is_(False))
+            ) == 1
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "submission.attempt", AuditLog.user_id == u2)
+            ) == 1
             assert await db.scalar(
                 select(func.count()).select_from(AuditLog)
                 .where(AuditLog.event == "challenge.publish", AuditLog.user_id == u1)

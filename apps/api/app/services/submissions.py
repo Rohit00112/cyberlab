@@ -82,6 +82,7 @@ async def submit_flag(
     can_edit: bool,
     lab_id: uuid.UUID | None = None,
     request: Any = None,
+    roles: list[str] | None = None,
 ) -> FlagSubmitResult:
     if not can_edit and not challenge.is_published:
         raise HTTPException(
@@ -101,6 +102,19 @@ async def submit_flag(
         if get_settings().rust_core_url
         else verify_flag(flag, expected_hash)
     )
+    if not correct and get_settings().rust_core_url:
+        from app.core.rust_engine import record_incorrect_attempt
+        from app.services.recommendations import refresh_challenge_difficulty_after_submission
+
+        challenge_id = challenge.id
+        await db.rollback()
+        await record_incorrect_attempt(
+            str(challenge_id), str(user_id), roles or [],
+            request.client.host if request and request.client else None,
+        )
+        await refresh_challenge_difficulty_after_submission(db, challenge_id)
+        await db.commit()
+        return FlagSubmitResult(correct=False, points=0, message="Incorrect flag")
 
     if correct:
         existing = await db.scalar(
