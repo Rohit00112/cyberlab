@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core import competition_transitions, rust_engine
+from app.models.challenges import Challenge
 from app.models.competitions import Competition
 from app.models.users import User
 from app.schemas.competition import CompetitionUpdate
@@ -181,5 +182,47 @@ async def test_rust_competition_edit_outcomes_fail_closed(monkeypatch, outcome, 
     with pytest.raises(HTTPException) as exc:
         await rust_engine.edit_competition_in_rust(
             str(uuid.uuid4()), str(uuid.uuid4()), ["faculty"], None, {"title": "Edit"}
+        )
+    assert exc.value.status_code == http_status
+
+
+@pytest.mark.asyncio
+async def test_competition_challenge_links_python_fallback(test_db, monkeypatch):
+    monkeypatch.setattr(
+        competitions, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    async with test_db() as db:
+        competition, user = await _seed_competition(db)
+        challenge = Challenge(
+            slug=f"fallback-link-{uuid.uuid4().hex[:10]}", title="Fallback link",
+            description="Test", category="Linux", difficulty="beginner",
+            points=50, status="published",
+        )
+        db.add(challenge)
+        await db.commit()
+        linked = await competitions.add_challenge(db, competition, challenge.id, None, user)
+        assert linked.challenge_count == 1
+        removed = await competitions.remove_challenge(db, competition, challenge.id, user)
+        assert removed.challenge_count == 0
+
+
+@pytest.mark.parametrize(
+    ("action", "outcome", "http_status"),
+    [
+        ("add", "challenge_not_found", 404),
+        ("add", "duplicate", 409),
+        ("remove", "locked", 409),
+        ("remove", "unexpected", 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_competition_link_outcomes_fail_closed(
+    monkeypatch, action, outcome, http_status
+):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value={"outcome": outcome}))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.link_competition_challenge_in_rust(
+            action, str(uuid.uuid4()), str(uuid.uuid4()),
+            str(uuid.uuid4()), ["faculty"], None,
         )
     assert exc.value.status_code == http_status

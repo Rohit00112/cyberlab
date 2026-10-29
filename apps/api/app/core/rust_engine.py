@@ -133,6 +133,36 @@ async def edit_competition_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
 
 
+async def link_competition_challenge_in_rust(
+    action: str, competition_id: str, challenge_id: str,
+    actor_id: str, roles: list[str], ip_address: str | None,
+    points: int | None = None,
+) -> None:
+    if action not in {"add", "remove"}:
+        raise HTTPException(status_code=503, detail="Invalid competition link action")
+    result = await _post(f"/v1/competitions/challenges/{action}", {
+        "competition_id": competition_id, "challenge_id": challenge_id,
+        "actor_id": actor_id, "roles": roles, "ip_address": ip_address,
+        "points": points,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if outcome == "challenge_not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if outcome == "locked":
+        raise HTTPException(
+            status_code=409,
+            detail="Challenge set is locked once competition leaves registration.",
+        )
+    if outcome == "duplicate":
+        raise HTTPException(status_code=409, detail="Challenge already in competition")
+    if outcome != {"add": "added", "remove": "removed"}[action]:
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

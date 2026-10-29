@@ -249,6 +249,19 @@ async def add_challenge(
     request: Request | None = None,
 ) -> CompetitionOut:
     _ensure_editable(competition)
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import link_competition_challenge_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await link_competition_challenge_in_rust(
+            "add", str(competition_id), str(challenge_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None, points,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     challenge = await db.get(Challenge, challenge_id)
     if challenge is None or not challenge.is_published:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
@@ -299,6 +312,19 @@ async def remove_challenge(
     request: Request | None = None,
 ) -> CompetitionOut:
     _ensure_editable(competition)
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import link_competition_challenge_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await link_competition_challenge_in_rust(
+            "remove", str(competition_id), str(challenge_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     await db.execute(
         delete(CompetitionChallenge).where(
             CompetitionChallenge.competition_id == competition.id,

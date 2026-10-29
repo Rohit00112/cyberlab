@@ -34,6 +34,7 @@ from app.models import (  # noqa: F401 (registers tables)
     Challenge,
     ChallengeSkill,
     Competition,
+    CompetitionChallenge,
     Skill,
     Submission,
     User,
@@ -939,6 +940,260 @@ async def test_rust_competition_edit_is_atomic_and_api_compatible(
                 select(func.count()).select_from(AuditLog)
                 .where(AuditLog.event == "competition.update")
             ) == 2
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_challenge_links_are_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, _, published_id, another_published_id, draft_id = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=organizer_id, keycloak_sub="link-test", roles=["faculty"],
+    )
+    async with ctx.factory() as db:
+        override_comp = Competition(
+            slug="link-override", title="Override links", status="draft",
+            scoring_mode="override", created_by=organizer_id,
+        )
+        standard_comp = Competition(
+            slug="link-standard", title="Standard links", status="registration",
+            scoring_mode="standard", created_by=organizer_id,
+        )
+        rollback_comp = Competition(
+            slug="link-rollback", title="Rollback links", status="draft",
+            created_by=organizer_id,
+        )
+        db.add_all([override_comp, standard_comp, rollback_comp])
+        await db.commit()
+        override_id, standard_id, rollback_id = (
+            override_comp.id, standard_comp.id, rollback_comp.id
+        )
+
+    add_route = f"{ctx.rust_url}/v1/competitions/challenges/add"
+    remove_route = f"{ctx.rust_url}/v1/competitions/challenges/remove"
+    rust_payload = {
+        "competition_id": str(override_id), "challenge_id": str(published_id),
+        "actor_id": str(organizer_id), "roles": ["faculty"],
+        "ip_address": "127.0.0.1", "points": 125,
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            link_url = f"/api/v1/competitions/{override_id}/challenges"
+            first = await client.post(
+                link_url, json={"challenge_id": str(published_id), "points": 125}
+            )
+            assert first.status_code == 200, first.text
+            assert first.json()["challenge_count"] == 1
+            assert first.json()["challenges"][0]["position"] == 0
+            assert first.json()["challenges"][0]["points"] == 125
+
+            second = await client.post(
+                link_url, json={"challenge_id": str(another_published_id)}
+            )
+            assert second.status_code == 200, second.text
+            assert [item["position"] for item in second.json()["challenges"]] == [0, 1]
+            duplicate = await client.post(
+                link_url, json={"challenge_id": str(published_id), "points": 99}
+            )
+            assert duplicate.status_code == 409
+            unpublished = await client.post(
+                link_url, json={"challenge_id": str(draft_id)}
+            )
+            assert unpublished.status_code == 404
+
+            standard = await client.post(
+                f"/api/v1/competitions/{standard_id}/challenges",
+                json={"challenge_id": str(published_id), "points": 888},
+            )
+            assert standard.status_code == 200, standard.text
+            assert standard.json()["challenges"][0]["points"] is None
+
+            removed = await client.delete(f"{link_url}/{published_id}")
+            assert removed.status_code == 200, removed.text
+            assert removed.json()["challenge_count"] == 1
+            assert removed.json()["challenges"][0]["position"] == 1
+            repeated = await client.delete(f"{link_url}/{published_id}")
+            assert repeated.status_code == 200
+            assert repeated.json()["challenge_count"] == 1
+
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.challenge_add")
+            ) == 3
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.challenge_remove")
+            ) == 2
+            stored = await db.scalar(
+                select(CompetitionChallenge).where(
+                    CompetitionChallenge.competition_id == override_id,
+                    CompetitionChallenge.challenge_id == another_published_id,
+                )
+            )
+            assert stored.position == 1 and stored.points is None
+
+        async with httpx.AsyncClient(timeout=2) as client:
+            unauthorized = await client.post(add_route, json=rust_payload)
+            assert unauthorized.status_code == 401
+            forbidden = await client.post(
+                add_route, json={**rust_payload, "roles": ["student"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden.status_code == 403
+            invalid_points = await client.post(
+                add_route, json={**rust_payload, "points": -1},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert invalid_points.status_code == 400
+            invalid_id = await client.post(
+                remove_route, json={**rust_payload, "challenge_id": "invalid"},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert invalid_id.status_code == 400
+
+        # Probe the column allowlists inside a rolled-back transaction, without
+        # provisioning or touching persistent database roles.
+        role = f"cyberlab_link_probe_{uuid.uuid4().hex[:12]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+                await db.execute(text(
+                    f'GRANT SELECT (id, slug, status, scoring_mode) ON competitions TO "{role}"'
+                ))
+                # FOR UPDATE requires a column-scoped UPDATE privilege too;
+                # the real writer already has one from competition editing.
+                await db.execute(text(
+                    f'GRANT UPDATE (title) ON competitions TO "{role}"'
+                ))
+                await db.execute(text(
+                    f'GRANT SELECT (id, status) ON challenges TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT SELECT (id, competition_id, challenge_id, position) '
+                    f'ON competition_challenges TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, competition_id, challenge_id, points, position) '
+                    f'ON competition_challenges TO "{role}"'
+                ))
+                await db.execute(text(
+                    f'GRANT DELETE ON competition_challenges TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address, details) '
+                    f'ON audit_logs TO "{role}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{role}"'))
+                await db.execute(text(
+                    'SELECT slug, status, scoring_mode FROM competitions '
+                    'WHERE id=:id FOR UPDATE'
+                ), {"id": override_id})
+                pos = await db.scalar(text(
+                    'SELECT COALESCE(MAX(position), -1) FROM competition_challenges '
+                    'WHERE competition_id=:id'
+                ), {"id": override_id})
+                assert pos == 1
+                inserted = await db.scalar(text(
+                    'INSERT INTO competition_challenges '
+                    '(id, competition_id, challenge_id, points, position) '
+                    'VALUES (gen_random_uuid(), :cid, :chid, 17, 2) '
+                    'ON CONFLICT (competition_id, challenge_id) DO NOTHING '
+                    'RETURNING id::text'
+                ), {"cid": override_id, "chid": published_id})
+                assert inserted is not None
+                await db.execute(text(
+                    'DELETE FROM competition_challenges WHERE competition_id=:cid '
+                    'AND challenge_id=:chid'
+                ), {"cid": override_id, "chid": published_id})
+                await db.execute(text(
+                    'INSERT INTO audit_logs '
+                    '(id, event, user_id, target_id, details) VALUES '
+                    '(gen_random_uuid(), :event, :actor, :target, :details)'
+                ), {
+                    "event": "competition.challenge_add", "actor": organizer_id,
+                    "target": str(published_id), "details": '{"competition":"link-override"}',
+                })
+            finally:
+                await db.rollback()
+
+        async with ctx.factory() as db:
+            locked = await db.get(Competition, override_id)
+            locked.status = "scheduled"
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            refused = await client.post(
+                f"/api/v1/competitions/{override_id}/challenges",
+                json={"challenge_id": str(published_id)},
+            )
+            assert refused.status_code == 409
+        async with httpx.AsyncClient(timeout=2) as client:
+            locked_rust = await client.post(
+                remove_route, json=rust_payload,
+                headers={"x-internal-token": ctx.token},
+            )
+            assert locked_rust.status_code == 200
+            assert locked_rust.json()["outcome"] == "locked"
+
+        # A mandatory audit failure rolls back both add and remove operations.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_link_add "
+                "CHECK (event <> 'competition.challenge_add') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            rollback_add = await client.post(
+                f"/api/v1/competitions/{rollback_id}/challenges",
+                json={"challenge_id": str(published_id)},
+            )
+            assert rollback_add.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(CompetitionChallenge)
+                .where(CompetitionChallenge.competition_id == rollback_id)) == 0
+            await db.execute(text("ALTER TABLE audit_logs DROP CONSTRAINT block_link_add"))
+            db.add(CompetitionChallenge(
+                competition_id=rollback_id, challenge_id=published_id,
+                position=0,
+            ))
+            await db.commit()
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_link_remove "
+                "CHECK (event <> 'competition.challenge_remove') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            rollback_remove = await client.delete(
+                f"/api/v1/competitions/{rollback_id}/challenges/{published_id}"
+            )
+            assert rollback_remove.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(CompetitionChallenge)
+                .where(CompetitionChallenge.competition_id == rollback_id)) == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)

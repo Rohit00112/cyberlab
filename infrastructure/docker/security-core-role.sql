@@ -140,3 +140,11 @@ GRANT SELECT (status) ON public.competitions TO cyberlab_security_writer;
 GRANT UPDATE (title, description, rules, start_at, end_at,
   registration_ends_at, allow_teams, max_team_size, scoring_mode, updated_at)
   ON public.competitions TO cyberlab_security_writer;
+-- Competition link ownership: lock status, resolve published challenges,
+-- compute the next position, and insert/delete links with a required audit.
+GRANT SELECT (scoring_mode) ON public.competitions TO cyberlab_security_writer;
+GRANT SELECT (id, competition_id, challenge_id, position)
+  ON public.competition_challenges TO cyberlab_security_writer;
+GRANT INSERT (id, competition_id, challenge_id, points, position)
+  ON public.competition_challenges TO cyberlab_security_writer;
+GRANT DELETE ON public.competition_challenges TO cyberlab_security_writer;
