@@ -41,7 +41,10 @@ pub fn validate(request: &PublishRequest) -> Result<(), PublishError> {
     validate_permission(request, "challenge.publish")
 }
 
-fn validate_permission(request: &PublishRequest, permission: &str) -> Result<(), PublishError> {
+pub(crate) fn validate_permission(
+    request: &PublishRequest,
+    permission: &str,
+) -> Result<(), PublishError> {
     if !valid_uuid(&request.challenge_id)
         || !valid_uuid(&request.actor_id)
         || request

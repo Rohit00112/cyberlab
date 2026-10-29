@@ -309,6 +309,18 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             assert published_response.json()["version"] == 4
             missing_response = await client.post(f"/api/v1/challenges/{c2}/publish")
             assert missing_response.status_code == 400
+            edited = await client.patch(
+                f"/api/v1/challenges/{c1}",
+                json={"title": "Rust Edited", "points": 180, "skills": ["Linux CLI"]},
+            )
+            assert edited.status_code == 200, edited.text
+            assert edited.json()["title"] == "Rust Edited"
+            assert edited.json()["version"] == 5
+            assert edited.json()["points"] == 180
+            blocked_status = await client.patch(
+                f"/api/v1/challenges/{c1}", json={"status": "draft"}
+            )
+            assert blocked_status.status_code == 400
             deleted_response = await client.delete(f"/api/v1/challenges/{c3}")
             assert deleted_response.status_code == 204
             repeated_delete = await client.delete(f"/api/v1/challenges/{c3}")
@@ -322,6 +334,10 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             assert await db.scalar(
                 select(func.count()).select_from(AuditLog)
                 .where(AuditLog.event == "challenge.delete", AuditLog.user_id == u1)
+            ) == 1
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "challenge.update", AuditLog.user_id == u1)
             ) == 1
 
         # Force an audit-insert failure in the disposable DB. The corresponding

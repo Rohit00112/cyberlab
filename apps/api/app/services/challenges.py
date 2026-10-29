@@ -155,12 +155,28 @@ async def update_challenge(
     data: ChallengeUpdate,
     user_id: uuid.UUID,
     request: Any = None,
+    roles: list[str] | None = None,
 ) -> ChallengeOut:
     updates = data.model_dump(exclude_unset=True)
     if "status" in updates:
         raise HTTPException(status_code=400, detail="Use the dedicated publish action")
     if challenge.status == "published" and updates.get("flag") is None and "flag" in updates:
         raise HTTPException(status_code=400, detail="Published challenges require a flag")
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import edit_challenge_in_rust
+
+        challenge_id = challenge.id
+        if "flag" in updates:
+            flag = updates.pop("flag")
+            updates["flag_hash"] = hash_flag(flag) if flag is not None else None
+        await db.rollback()
+        await edit_challenge_in_rust(
+            str(challenge_id), str(user_id), roles or [],
+            request.client.host if request and request.client else None, updates,
+        )
+        challenge = await db.get(Challenge, challenge_id, populate_existing=True)
+        authors = await _authors_map(db)
+        return _to_out(challenge, authors)
     if "flag" in updates:
         flag = updates.pop("flag")
         if flag is None:

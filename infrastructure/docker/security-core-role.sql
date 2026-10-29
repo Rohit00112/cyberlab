@@ -52,3 +52,9 @@ GRANT UPDATE (status, version, updated_at) ON public.challenges TO cyberlab_secu
 GRANT SELECT (version) ON public.challenges TO cyberlab_security_writer;
 GRANT INSERT (id, event, user_id, target_id, ip_address) ON public.audit_logs TO cyberlab_security_writer;
 GRANT DELETE ON public.challenges TO cyberlab_security_writer;
+GRANT SELECT (status) ON public.challenges TO cyberlab_security_writer;
+GRANT UPDATE (title, description, instructions, category, difficulty, points,
+  estimated_minutes, skills, prerequisites, hints, hint_penalty, flag_hash,
+  flag_format, environment_type, lab_config) ON public.challenges TO cyberlab_security_writer;
+GRANT SELECT (id, slug, name) ON public.skills TO cyberlab_security_writer;
+GRANT DELETE, INSERT ON public.challenge_skills TO cyberlab_security_writer;

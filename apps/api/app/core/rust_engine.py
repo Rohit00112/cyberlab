@@ -98,6 +98,23 @@ async def delete_challenge_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust security core response")
 
 
+async def edit_challenge_in_rust(
+    challenge_id: str, actor_id: str, roles: list[str],
+    ip_address: str | None, changes: dict,
+) -> int:
+    result = await _post("/v1/challenges/edit", {
+        "challenge_id": challenge_id, "actor_id": actor_id,
+        "roles": roles, "ip_address": ip_address, "changes": changes,
+    })
+    if result.get("outcome") == "not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if result.get("outcome") == "missing_flag":
+        raise HTTPException(status_code=400, detail="Published challenges require a flag")
+    if result.get("outcome") != "updated" or type(result.get("version")) is not int:
+        raise HTTPException(status_code=503, detail="Invalid Rust security core response")
+    return result["version"]
+
+
 async def calculate_score(
     *, base_points: int, solve_rank: int, mode: str, penalty: int
 ) -> int:

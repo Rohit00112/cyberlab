@@ -85,7 +85,9 @@ async def update_challenge(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.edit"))],
 ):
     challenge = await _get_editable(db, challenge_id)
-    return await service.update_challenge(db, challenge, payload, user.id, request=request)
+    return await service.update_challenge(
+        db, challenge, payload, user.id, request=request, roles=user.roles
+    )
 
 
 @router.post("/{challenge_id}/publish", response_model=ChallengeOut)
