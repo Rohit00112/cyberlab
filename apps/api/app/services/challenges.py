@@ -110,11 +110,28 @@ async def get_challenge(
 
 
 async def create_challenge(
-    db: AsyncSession, data: ChallengeCreate, author_id: uuid.UUID, request: Any = None
+    db: AsyncSession, data: ChallengeCreate, author_id: uuid.UUID, request: Any = None,
+    roles: list[str] | None = None,
 ) -> ChallengeOut:
     if data.status != "draft":
         raise HTTPException(status_code=400, detail="Create challenges as drafts; use publish")
     slug = slugify(data.title)
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import create_challenge_in_rust
+
+        fields = data.model_dump(exclude={"flag", "status"})
+        fields["flag_hash"] = hash_flag(data.flag) if data.flag else None
+        await db.rollback()
+        challenge_id = await create_challenge_in_rust(
+            str(author_id), roles or [],
+            request.client.host if request and request.client else None,
+            slug, fields,
+        )
+        challenge = await db.get(Challenge, uuid.UUID(challenge_id))
+        if challenge is None:
+            raise HTTPException(status_code=503, detail="Created challenge is unavailable")
+        authors = await _authors_map(db)
+        return _to_out(challenge, authors)
     existing = await db.scalar(select(Challenge).where(Challenge.slug == slug))
     if existing:
         slug = f"{slug}-{uuid.uuid4().hex[:6]}"
@@ -131,6 +148,7 @@ async def create_challenge(
         skills=data.skills,
         prerequisites=data.prerequisites,
         hints=data.hints,
+        hint_penalty=data.hint_penalty,
         flag_hash=hash_flag(data.flag) if data.flag else None,
         flag_format=data.flag_format,
         environment_type=data.environment_type,

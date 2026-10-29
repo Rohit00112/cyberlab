@@ -2,6 +2,7 @@
 pub mod authorization;
 pub mod catalog;
 pub mod competition;
+pub mod creation;
 pub mod editing;
 pub mod leaderboard;
 pub mod publishing;

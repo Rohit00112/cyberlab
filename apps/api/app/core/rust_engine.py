@@ -115,6 +115,26 @@ async def edit_challenge_in_rust(
     return result["version"]
 
 
+async def create_challenge_in_rust(
+    actor_id: str, roles: list[str], ip_address: str | None,
+    slug: str, fields: dict,
+) -> str:
+    result = await _post("/v1/challenges/create", {
+        "actor_id": actor_id, "roles": roles, "ip_address": ip_address,
+        "slug": slug, "fields": fields,
+    })
+    if result.get("outcome") != "created":
+        raise HTTPException(status_code=503, detail="Invalid Rust security core response")
+    try:
+        from uuid import UUID
+
+        return str(UUID(result["challenge_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503, detail="Invalid Rust security core response"
+        ) from exc
+
+
 async def calculate_score(
     *, base_points: int, solve_rank: int, mode: str, penalty: int
 ) -> int:

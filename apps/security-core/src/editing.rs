@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use tokio_postgres::Transaction;
 
 use crate::publishing::{validate_permission, PublishError, PublishRequest, PublishResponse};
 
@@ -121,6 +122,56 @@ fn skill_alias(value: &str) -> &str {
     }
 }
 
+/// Reconcile taxonomy links inside the same transaction as a challenge write.
+/// Shared by editing and creation, so neither flow can commit without links.
+pub(crate) async fn sync_skills(
+    transaction: &Transaction<'_>,
+    challenge_id: &str,
+    skills_value: &Value,
+) -> Result<(), PublishError> {
+    transaction
+        .execute(
+            "DELETE FROM challenge_skills WHERE challenge_id = ($1::text)::uuid",
+            &[&challenge_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    if let Some(names) = skills_value.as_array() {
+        let rows = transaction
+            .query("SELECT id::text, slug, name FROM skills", &[])
+            .await
+            .map_err(|_| PublishError::Database)?;
+        let mut by_key: HashMap<String, String> = HashMap::new();
+        for row in rows {
+            let id: String = row.get(0);
+            let slug: String = row.get(1);
+            let name: String = row.get(2);
+            by_key.insert(slug, id.clone());
+            by_key.insert(normalize(&name), id);
+        }
+        let mut linked: HashSet<String> = HashSet::new();
+        for value in names {
+            if let Some(raw) = value.as_str() {
+                let key = normalize(raw);
+                if let Some(id) = by_key.get(&key).or_else(|| by_key.get(skill_alias(&key))) {
+                    linked.insert(id.clone());
+                }
+            }
+        }
+        for skill_id in linked {
+            transaction
+                .execute(
+                    "INSERT INTO challenge_skills (id, challenge_id, skill_id)
+                     VALUES (gen_random_uuid(), ($1::text)::uuid, ($2::text)::uuid)",
+                    &[&challenge_id, &skill_id],
+                )
+                .await
+                .map_err(|_| PublishError::Database)?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn edit(pool: &Pool, request: &EditRequest) -> Result<PublishResponse, PublishError> {
     validate_permission(
         &PublishRequest {
@@ -186,46 +237,7 @@ pub async fn edit(pool: &Pool, request: &EditRequest) -> Result<PublishResponse,
     let version: i32 = row.get(0);
 
     if let Some(skills_value) = request.changes.get("skills") {
-        transaction
-            .execute(
-                "DELETE FROM challenge_skills WHERE challenge_id = ($1::text)::uuid",
-                &[&request.challenge_id],
-            )
-            .await
-            .map_err(|_| PublishError::Database)?;
-        if let Some(names) = skills_value.as_array() {
-            let rows = transaction
-                .query("SELECT id::text, slug, name FROM skills", &[])
-                .await
-                .map_err(|_| PublishError::Database)?;
-            let mut by_key: HashMap<String, String> = HashMap::new();
-            for row in rows {
-                let id: String = row.get(0);
-                let slug: String = row.get(1);
-                let name: String = row.get(2);
-                by_key.insert(slug, id.clone());
-                by_key.insert(normalize(&name), id);
-            }
-            let mut linked: HashSet<String> = HashSet::new();
-            for value in names {
-                if let Some(raw) = value.as_str() {
-                    let key = normalize(raw);
-                    if let Some(id) = by_key.get(&key).or_else(|| by_key.get(skill_alias(&key))) {
-                        linked.insert(id.clone());
-                    }
-                }
-            }
-            for skill_id in linked {
-                transaction
-                    .execute(
-                        "INSERT INTO challenge_skills (id, challenge_id, skill_id)
-                     VALUES (gen_random_uuid(), ($1::text)::uuid, ($2::text)::uuid)",
-                        &[&request.challenge_id, &skill_id],
-                    )
-                    .await
-                    .map_err(|_| PublishError::Database)?;
-            }
-        }
+        sync_skills(&transaction, &request.challenge_id, skills_value).await?;
     }
     transaction
         .execute(

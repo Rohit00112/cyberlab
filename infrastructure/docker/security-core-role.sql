@@ -56,5 +56,12 @@ GRANT SELECT (status) ON public.challenges TO cyberlab_security_writer;
 GRANT UPDATE (title, description, instructions, category, difficulty, points,
   estimated_minutes, skills, prerequisites, hints, hint_penalty, flag_hash,
   flag_format, environment_type, lab_config) ON public.challenges TO cyberlab_security_writer;
+-- Rust challenge creation supplies only these explicit fields. Keep INSERT
+-- column-scoped so new schema fields are not writable without review.
+GRANT INSERT (id, slug, title, description, instructions, category,
+  difficulty, points, estimated_minutes, skills, prerequisites, hints,
+  hint_penalty, flag_hash, flag_format, environment_type, lab_config,
+  author_id, status, version) ON public.challenges TO cyberlab_security_writer;
 GRANT SELECT (id, slug, name) ON public.skills TO cyberlab_security_writer;
 GRANT DELETE, INSERT ON public.challenge_skills TO cyberlab_security_writer;
+GRANT SELECT (id) ON public.challenges TO cyberlab_security_writer;

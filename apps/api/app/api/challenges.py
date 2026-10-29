@@ -73,7 +73,9 @@ async def create_challenge(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from None
-    return await service.create_challenge(db, payload, user.id, request=request)
+    return await service.create_challenge(
+        db, payload, user.id, request=request, roles=user.roles
+    )
 
 
 @router.patch("/{challenge_id}", response_model=ChallengeOut)

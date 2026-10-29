@@ -25,10 +25,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.deps import CurrentUser, get_current_user
 from app.core import authorization, rust_engine
 from app.core.config import get_settings
+from app.core.flags import hash_flag
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import AuditLog, Challenge, Submission, User  # noqa: F401 (registers tables)
+from app.models import (  # noqa: F401 (registers tables)
+    AuditLog,
+    Challenge,
+    ChallengeSkill,
+    Skill,
+    Submission,
+    User,
+)
 from app.services import challenges, submissions
 
 pytestmark = [
@@ -90,6 +98,7 @@ async def live_rust_database():
                 points=900, status="draft",
             )
             db.add_all([u1, u2, u3, c1, c2, c3])
+            db.add(Skill(slug="linux", name="Linux"))
             await db.flush()
             db.add_all([
                 Submission(
@@ -290,6 +299,18 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 headers={"x-internal-token": ctx.token},
             )
             assert forbidden_delete.status_code == 403
+            forbidden_create = await client.post(
+                f"{ctx.rust_url}/v1/challenges/create",
+                json={
+                    "actor_id": str(u1), "roles": ["student"], "ip_address": None,
+                    "slug": "forbidden-creation", "fields": {
+                        "title": "Forbidden", "description": "No creation allowed",
+                        "category": "Linux", "difficulty": "beginner",
+                    },
+                },
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden_create.status_code == 403
         async with ctx.factory() as db:
             published = await db.get(Challenge, c1)
             assert published.version == 3
@@ -321,11 +342,44 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 f"/api/v1/challenges/{c1}", json={"status": "draft"}
             )
             assert blocked_status.status_code == 400
+            creation_payload = {
+                "title": "Rust Atomic Creation", "description": "Created through Rust",
+                "category": "Linux", "difficulty": "beginner",
+                "points": 75, "hint_penalty": 12, "skills": ["Linux CLI"],
+                "flag": "IIC{creation}",
+            }
+            created_response = await client.post(
+                "/api/v1/challenges", json=creation_payload,
+            )
+            assert created_response.status_code == 201, created_response.text
+            created = created_response.json()
+            created_id = uuid.UUID(created["id"])
+            assert created["status"] == "draft"
+            assert created["version"] == 1
+            assert created["hint_penalty"] == 12
+            assert created["slug"] == "rust-atomic-creation"
+            duplicate = await client.post(
+                "/api/v1/challenges", json=creation_payload,
+            )
+            assert duplicate.status_code == 201, duplicate.text
+            assert duplicate.json()["id"] != created["id"]
+            assert duplicate.json()["slug"].startswith("rust-atomic-creation-")
             deleted_response = await client.delete(f"/api/v1/challenges/{c3}")
             assert deleted_response.status_code == 204
             repeated_delete = await client.delete(f"/api/v1/challenges/{c3}")
             assert repeated_delete.status_code == 404
         async with ctx.factory() as db:
+            created_row = await db.get(Challenge, created_id)
+            assert created_row.flag_hash == hash_flag("IIC{creation}")
+            assert created_row.hint_penalty == 12
+            assert await db.scalar(
+                select(func.count()).select_from(ChallengeSkill)
+                .where(ChallengeSkill.challenge_id == created_id)
+            ) == 1
+            assert await db.scalar(
+                select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "challenge.create", AuditLog.user_id == u1)
+            ) == 2
             assert await db.get(Challenge, c3) is None
             assert await db.scalar(
                 select(func.count()).select_from(AuditLog)
@@ -373,6 +427,31 @@ async def test_live_catalog_and_leaderboard_api_match_python(
             row = await db.get(Challenge, rollback_id)
             assert row.status == "draft"
             assert row.version == 1
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT audit_block_create "
+                "CHECK (event <> 'challenge.create') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=2) as client:
+            failed_create = await client.post(
+                f"{ctx.rust_url}/v1/challenges/create",
+                json={
+                    "actor_id": str(u1), "roles": ["faculty"], "ip_address": None,
+                    "slug": "creation-must-rollback", "fields": {
+                        "title": "Creation must rollback",
+                        "description": "Audit insertion is rejected",
+                        "category": "Linux", "difficulty": "beginner",
+                        "skills": ["Linux CLI"],
+                    },
+                },
+                headers={"x-internal-token": ctx.token},
+            )
+            assert failed_create.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(
+                select(func.count()).select_from(Challenge)
+                .where(Challenge.slug == "creation-must-rollback")
+            ) == 0
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
