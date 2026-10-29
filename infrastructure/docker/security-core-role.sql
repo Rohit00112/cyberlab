@@ -128,3 +128,6 @@ GRANT UPDATE (competency_level, last_updated)
   ON public.user_skill_profiles TO cyberlab_security_writer;
 GRANT SELECT (user_id, skill_id, competency_level)
   ON public.user_skill_profiles TO cyberlab_security_writer;
+GRANT INSERT (id, slug, title, description, rules, start_at, end_at,
+  registration_ends_at, allow_teams, max_team_size, scoring_mode, status, created_by)
+  ON public.competitions TO cyberlab_security_writer;

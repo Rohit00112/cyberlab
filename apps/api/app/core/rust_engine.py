@@ -96,6 +96,22 @@ async def record_correct_solve(
     return outcome, points
 
 
+async def create_competition_in_rust(
+    actor_id: str, roles: list[str], ip_address: str | None, slug: str, fields: dict
+) -> str:
+    result = await _post("/v1/competitions/create", {
+        "actor_id": actor_id, "roles": roles, "ip_address": ip_address,
+        "slug": slug, "fields": fields,
+    })
+    if result.get("outcome") != "created":
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    from uuid import UUID
+    try:
+        return str(UUID(result["competition_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Invalid Rust competition ID") from exc
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

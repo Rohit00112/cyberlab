@@ -14,6 +14,9 @@ use cyberlab_security_core::catalog::{query_catalog, CatalogError, CatalogPage, 
 use cyberlab_security_core::competition::{
     transition_competition, CompetitionTransitionRequest, CompetitionTransitionResponse,
 };
+use cyberlab_security_core::competition_writes::{
+    create as create_competition_record, CompetitionCreateRequest, CompetitionCreateResponse,
+};
 use cyberlab_security_core::creation::{create, CreateRequest, CreateResponse};
 use cyberlab_security_core::editing::{edit, EditRequest};
 use cyberlab_security_core::leaderboard::{
@@ -299,6 +302,26 @@ async fn correct_submission(
     }
 }
 
+async fn create_competition_record_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CompetitionCreateRequest>,
+) -> Result<Json<CompetitionCreateResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match create_competition_record(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -340,6 +363,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/lab-transition", post(lab_transition))
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))
+        .route(
+            "/v1/competitions/create",
+            post(create_competition_record_route),
+        )
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))
         .route("/v1/challenges/publish", post(publish_challenge))

@@ -18,6 +18,7 @@ from app.core.competition_transitions import (
     TRANSITIONS,
     decide_competition_transition,
 )
+from app.core.config import get_settings
 from app.models.challenges import Challenge
 from app.models.competitions import (
     Competition,
@@ -83,6 +84,20 @@ async def create_competition(
     user: User,
     request: Request | None = None,
 ) -> CompetitionOut:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import create_competition_in_rust
+
+        base = _slugify(data.title)
+        await db.rollback()
+        competition_id = await create_competition_in_rust(
+            str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            base, data.model_dump(mode="json"),
+        )
+        competition = await db.get(Competition, uuid.UUID(competition_id))
+        if competition is None:
+            raise HTTPException(status_code=503, detail="Competition was not persisted")
+        return await _to_out(db, competition, user=user)
     base = _slugify(data.title)
     slug = base
     if await db.scalar(select(Competition).where(Competition.slug == slug)):
