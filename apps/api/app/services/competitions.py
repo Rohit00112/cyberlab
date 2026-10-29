@@ -350,6 +350,19 @@ async def register(
     request: Request | None = None,
 ) -> CompetitionOut:
     _ensure_registration_open(competition)
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import change_competition_registration_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await change_competition_registration_in_rust(
+            "register", str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     existing = await db.scalar(
         select(CompetitionParticipant).where(
             CompetitionParticipant.competition_id == competition.id,
@@ -678,6 +691,19 @@ async def unregister(
     user: User,
     request: Request | None = None,
 ) -> CompetitionOut:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import change_competition_registration_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await change_competition_registration_in_rust(
+            "unregister", str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     participant = await _participant(db, competition.id, user.id)
     if participant is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Not registered")

@@ -163,6 +163,38 @@ async def link_competition_challenge_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
 
 
+async def change_competition_registration_in_rust(
+    action: str, competition_id: str, actor_id: str,
+    roles: list[str], ip_address: str | None,
+) -> None:
+    if action not in {"register", "unregister"}:
+        raise HTTPException(status_code=503, detail="Invalid competition registration action")
+    result = await _post(f"/v1/competitions/{action}", {
+        "competition_id": competition_id, "actor_id": actor_id,
+        "roles": roles, "ip_address": ip_address,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if outcome == "closed":
+        current = result.get("current_status")
+        if current not in {
+            "draft", "registration", "scheduled", "live", "finished", "archived",
+        }:
+            raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+        raise HTTPException(
+            status_code=409, detail=f"Registration is not open (status '{current}').",
+        )
+    if outcome == "already_registered":
+        raise HTTPException(status_code=409, detail="Already registered")
+    if outcome == "not_registered":
+        raise HTTPException(status_code=409, detail="Not registered")
+    if outcome != {"register": "registered", "unregister": "unregistered"}[action]:
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

@@ -4,6 +4,7 @@ pub mod authorization;
 pub mod catalog;
 pub mod competition;
 pub mod competition_links;
+pub mod competition_participants;
 pub mod competition_writes;
 pub mod creation;
 pub mod editing;

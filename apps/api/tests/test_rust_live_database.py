@@ -35,8 +35,11 @@ from app.models import (  # noqa: F401 (registers tables)
     ChallengeSkill,
     Competition,
     CompetitionChallenge,
+    CompetitionParticipant,
     Skill,
     Submission,
+    Team,
+    TeamMember,
     User,
 )
 from app.services import challenges, competitions, submissions
@@ -1194,6 +1197,243 @@ async def test_rust_competition_challenge_links_are_atomic_and_api_compatible(
         async with ctx.factory() as db:
             assert await db.scalar(select(func.count()).select_from(CompetitionChallenge)
                 .where(CompetitionChallenge.competition_id == rollback_id)) == 1
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_registration_is_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    student_id, another_student_id, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=student_id, keycloak_sub="registration-test", roles=["student"],
+    )
+    async with ctx.factory() as db:
+        active = Competition(
+            slug="registration-open", title="Registration open",
+            status="registration", allow_teams=True, created_by=student_id,
+        )
+        closed = Competition(
+            slug="registration-closed", title="Registration closed",
+            status="draft", created_by=student_id,
+        )
+        rollback_comp = Competition(
+            slug="registration-rollback", title="Registration rollback",
+            status="scheduled", created_by=student_id,
+        )
+        db.add_all([active, closed, rollback_comp])
+        await db.commit()
+        active_id, closed_id, rollback_id = active.id, closed.id, rollback_comp.id
+
+    register_internal = f"{ctx.rust_url}/v1/competitions/register"
+    unregister_internal = f"{ctx.rust_url}/v1/competitions/unregister"
+    request_data = {
+        "competition_id": str(active_id), "actor_id": str(student_id),
+        "roles": ["student"], "ip_address": "127.0.0.1",
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            registered = await client.post(
+                f"/api/v1/competitions/{active_id}/register"
+            )
+            assert registered.status_code == 200, registered.text
+            assert registered.json()["participant_count"] == 1
+            assert registered.json()["me"]["registered"] is True
+            duplicate = await client.post(
+                f"/api/v1/competitions/{active_id}/register"
+            )
+            assert duplicate.status_code == 409
+            assert duplicate.json()["detail"] == "Already registered"
+            closed = await client.post(
+                f"/api/v1/competitions/{closed_id}/register"
+            )
+            assert closed.status_code == 409
+            assert "draft" in closed.json()["detail"]
+
+        async with httpx.AsyncClient(timeout=2) as client:
+            missing_token = await client.post(register_internal, json=request_data)
+            assert missing_token.status_code == 401
+            missing_unregistration_token = await client.post(
+                unregister_internal, json=request_data
+            )
+            assert missing_unregistration_token.status_code == 401
+            forbidden = await client.post(
+                register_internal,
+                json={**request_data, "roles": ["competition_organizer"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden.status_code == 403
+            forbidden_unregistration = await client.post(
+                unregister_internal,
+                json={**request_data, "roles": ["competition_organizer"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden_unregistration.status_code == 403
+            invalid_id = await client.post(
+                register_internal,
+                json={**request_data, "actor_id": "invalid"},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert invalid_id.status_code == 400
+            direct_closed = await client.post(
+                register_internal,
+                json={**request_data, "competition_id": str(closed_id)},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert direct_closed.status_code == 200
+            assert direct_closed.json()["outcome"] == "closed"
+            assert direct_closed.json()["current_status"] == "draft"
+
+        # Test the minimal database privileges without persisting a role.
+        probe = f"cyberlab_registration_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                await db.execute(text(
+                    f'GRANT SELECT (id, slug, status) ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    f'GRANT UPDATE (title) ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT SELECT (id, competition_id, user_id, team_id) '
+                    f'ON competition_participants TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, competition_id, user_id) '
+                    f'ON competition_participants TO "{probe}"'
+                ))
+                await db.execute(text(
+                    f'GRANT DELETE ON competition_participants TO "{probe}"'
+                ))
+                await db.execute(text(
+                    f'GRANT SELECT (team_id, user_id) ON team_members TO "{probe}"'
+                ))
+                await db.execute(text(
+                    f'GRANT DELETE ON team_members TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{probe}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                await db.execute(text(
+                    'SELECT slug, status FROM competitions WHERE id=:cid FOR UPDATE'
+                ), {"cid": rollback_id})
+                inserted = await db.scalar(text(
+                    'INSERT INTO competition_participants (id, competition_id, user_id) '
+                    'VALUES (gen_random_uuid(), :cid, :uid) '
+                    'ON CONFLICT (competition_id, user_id) DO NOTHING RETURNING id::text'
+                ), {"cid": rollback_id, "uid": another_student_id})
+                assert inserted is not None
+                team_id = await db.scalar(text(
+                    'SELECT team_id::text FROM competition_participants '
+                    'WHERE competition_id=:cid AND user_id=:uid'
+                ), {"cid": rollback_id, "uid": another_student_id})
+                assert team_id is None
+                await db.execute(text(
+                    'DELETE FROM competition_participants '
+                    'WHERE competition_id=:cid AND user_id=:uid'
+                ), {"cid": rollback_id, "uid": another_student_id})
+                await db.execute(text(
+                    'INSERT INTO audit_logs (id, event, user_id, target_id) '
+                    "VALUES (gen_random_uuid(), 'competition.register', :actor, "
+                    "'registration-rollback')"
+                ), {"actor": another_student_id})
+            finally:
+                await db.rollback()
+
+        # The legacy API permits unregistering even after the event goes live;
+        # remove existing team membership in the same transaction.
+        async with ctx.factory() as db:
+            team = Team(competition_id=active_id, name="Existing team", created_by=student_id)
+            db.add(team)
+            await db.flush()
+            db.add(TeamMember(team_id=team.id, user_id=student_id, role="captain"))
+            participant = await db.scalar(select(CompetitionParticipant).where(
+                CompetitionParticipant.competition_id == active_id,
+                CompetitionParticipant.user_id == student_id,
+            ))
+            participant.team_id = team.id
+            active = await db.get(Competition, active_id)
+            active.status = "live"
+            await db.commit()
+            team_id = team.id
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            removed = await client.post(
+                f"/api/v1/competitions/{active_id}/unregister"
+            )
+            assert removed.status_code == 200, removed.text
+            assert removed.json()["participant_count"] == 0
+            assert removed.json()["me"] is None
+            repeated = await client.post(
+                f"/api/v1/competitions/{active_id}/unregister"
+            )
+            assert repeated.status_code == 409
+            assert repeated.json()["detail"] == "Not registered"
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(TeamMember)
+                .where(TeamMember.team_id == team_id)) == 0
+            assert await db.scalar(select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.register")) == 1
+            assert await db.scalar(select(func.count()).select_from(AuditLog)
+                .where(AuditLog.event == "competition.unregister")) == 1
+
+        # Reject the audit and prove neither registration nor unregistration
+        # survives in this uniquely disposable PostgreSQL database.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_registration "
+                "CHECK (event <> 'competition.register') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed_register = await client.post(
+                f"/api/v1/competitions/{rollback_id}/register"
+            )
+            assert failed_register.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(CompetitionParticipant)
+                .where(CompetitionParticipant.competition_id == rollback_id)) == 0
+            await db.execute(text("ALTER TABLE audit_logs DROP CONSTRAINT block_registration"))
+            db.add(CompetitionParticipant(competition_id=rollback_id, user_id=student_id))
+            await db.commit()
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_unregistration "
+                "CHECK (event <> 'competition.unregister') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed_unregister = await client.post(
+                f"/api/v1/competitions/{rollback_id}/unregister"
+            )
+            assert failed_unregister.status_code == 503
+        async with ctx.factory() as db:
+            assert await db.scalar(select(func.count()).select_from(CompetitionParticipant)
+                .where(CompetitionParticipant.competition_id == rollback_id)) == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)

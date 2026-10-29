@@ -226,3 +226,44 @@ async def test_rust_competition_link_outcomes_fail_closed(
             str(uuid.uuid4()), ["faculty"], None,
         )
     assert exc.value.status_code == http_status
+
+
+@pytest.mark.asyncio
+async def test_competition_registration_python_fallback(test_db, monkeypatch):
+    monkeypatch.setattr(
+        competitions, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    async with test_db() as db:
+        competition, user = await _seed_competition(db, "registration")
+        registered = await competitions.register(db, competition, user)
+        assert registered.participant_count == 1
+        with pytest.raises(HTTPException) as duplicate:
+            await competitions.register(db, competition, user)
+        assert duplicate.value.status_code == 409
+        unregistered = await competitions.unregister(db, competition, user)
+        assert unregistered.participant_count == 0
+        with pytest.raises(HTTPException) as missing:
+            await competitions.unregister(db, competition, user)
+        assert missing.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("action", "response", "http_status"),
+    [
+        ("register", {"outcome": "closed", "current_status": "draft"}, 409),
+        ("register", {"outcome": "closed", "current_status": "untrusted"}, 503),
+        ("register", {"outcome": "already_registered"}, 409),
+        ("unregister", {"outcome": "not_registered"}, 409),
+        ("unregister", {"outcome": "unknown"}, 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_registration_outcomes_are_validated(
+    monkeypatch, action, response, http_status
+):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=response))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.change_competition_registration_in_rust(
+            action, str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None
+        )
+    assert exc.value.status_code == http_status

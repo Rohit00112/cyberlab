@@ -18,6 +18,10 @@ use cyberlab_security_core::competition_links::{
     add as add_competition_challenge, remove as remove_competition_challenge,
     CompetitionLinkRequest, CompetitionLinkResponse,
 };
+use cyberlab_security_core::competition_participants::{
+    register as register_participant, unregister as unregister_participant, ParticipantRequest,
+    ParticipantResponse,
+};
 use cyberlab_security_core::competition_writes::{
     create as create_competition_record, edit as edit_competition_record, CompetitionCreateRequest,
     CompetitionCreateResponse, CompetitionEditRequest, CompetitionEditResponse,
@@ -387,6 +391,46 @@ async fn remove_competition_challenge_route(
     }
 }
 
+async fn register_competition_participant_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ParticipantRequest>,
+) -> Result<Json<ParticipantResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match register_participant(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn unregister_competition_participant_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ParticipantRequest>,
+) -> Result<Json<ParticipantResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match unregister_participant(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -440,6 +484,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/competitions/challenges/remove",
             post(remove_competition_challenge_route),
+        )
+        .route(
+            "/v1/competitions/register",
+            post(register_competition_participant_route),
+        )
+        .route(
+            "/v1/competitions/unregister",
+            post(unregister_competition_participant_route),
         )
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))

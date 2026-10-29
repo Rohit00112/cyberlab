@@ -148,3 +148,12 @@ GRANT SELECT (id, competition_id, challenge_id, position)
 GRANT INSERT (id, competition_id, challenge_id, points, position)
   ON public.competition_challenges TO cyberlab_security_writer;
 GRANT DELETE ON public.competition_challenges TO cyberlab_security_writer;
+-- Register/unregister participants atomically with mandatory audit records.
+GRANT SELECT (id, competition_id, user_id, team_id)
+  ON public.competition_participants TO cyberlab_security_writer;
+GRANT INSERT (id, competition_id, user_id)
+  ON public.competition_participants TO cyberlab_security_writer;
+GRANT DELETE ON public.competition_participants TO cyberlab_security_writer;
+-- Unregister must also revoke the participant's existing team membership.
+GRANT SELECT (team_id, user_id) ON public.team_members TO cyberlab_security_writer;
+GRANT DELETE ON public.team_members TO cyberlab_security_writer;
