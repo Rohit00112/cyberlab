@@ -730,8 +730,9 @@ async def test_python_worker_does_not_revive_lab_failed_during_network_setup(
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
+@pytest.mark.parametrize("creation_raises", [False, True])
 async def test_worker_compensates_if_processing_fails_after_provider_create(
-    test_db, monkeypatch, cleanup_fails
+    test_db, monkeypatch, cleanup_fails, creation_raises
 ):
     from app.core import lab_transitions
     from app.tasks import provisioning
@@ -763,7 +764,13 @@ async def test_worker_compensates_if_processing_fails_after_provider_create(
     monkeypatch.setattr(provisioning, "SessionLocal", test_db)
     provider = SimpleNamespace(
         ensure_network=AsyncMock(),
-        create_lab=AsyncMock(return_value=("compensation-ref", "192.0.2.22")),
+        create_lab=AsyncMock(
+            side_effect=(
+                DockerError("partial Docker create", provider_ref="compensation-ref")
+                if creation_raises else None
+            ),
+            return_value=("compensation-ref", "192.0.2.22"),
+        ),
         stop_lab=AsyncMock(side_effect=RuntimeError("cannot stop") if cleanup_fails else None),
         remove_lab=AsyncMock(),
     )

@@ -154,17 +154,29 @@ async def create_and_start_container(
     )
     _ensure_status(status, {201}, "container create")
     container_id = json.loads(body or b"{}").get("Id", "")
+    if not isinstance(container_id, str) or not container_id:
+        raise DockerError("Docker container creation did not return an ID")
 
-    status, _ = await _request(
-        "POST", f"/v1.24/containers/{container_id}/start"
-    )
-    if status not in (204, 304):
-        raise DockerError(f"container start failed: status {status}")
+    try:
+        status, _ = await _request(
+            "POST", f"/v1.24/containers/{container_id}/start"
+        )
+        if status not in (204, 304):
+            raise DockerError(f"container start failed: status {status}")
 
-    ip = await inspect_ip(container_id, network)
-    if not ip:
-        raise DockerError(f"container {name} has no address on {network}")
-    return container_id, ip
+        ip = await inspect_ip(container_id, network)
+        if not ip:
+            raise DockerError(f"container {name} has no address on {network}")
+        return container_id, ip
+    except Exception:
+        try:
+            await remove_container(container_id)
+        except Exception as cleanup_exc:
+            raise DockerError(
+                f"Docker container {container_id} failed to start and cleanup failed",
+                provider_ref=container_id,
+            ) from cleanup_exc
+        raise
 
 
 async def inspect_ip(container_id: str, network: str) -> str | None:

@@ -13,6 +13,12 @@ from typing import Any
 class LabProviderError(RuntimeError):
     """Raised when a lab provider operation fails."""
 
+    def __init__(self, message: str, *, provider_ref: str | None = None) -> None:
+        super().__init__(message)
+        # A provider may have allocated a resource before the operation failed.
+        # Carry its handle so the worker can clean up or persist it for recovery.
+        self.provider_ref = provider_ref
+
 
 class LabProvider(ABC):
     """Abstract base class for lab infrastructure providers."""

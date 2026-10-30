@@ -159,6 +159,9 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
         except Exception as exc:
             logger.exception("Provisioning failed for lab %s (job %s)", lab_id, job_uuid)
             await db.rollback()
+            # A provider can allocate a VM/container before raising, without
+            # returning the normal (ref, IP) tuple to this worker.
+            created_ref = created_ref or getattr(exc, "provider_ref", None)
             cleanup_error: str | None = None
             if created_ref is not None and provider is not None:
                 try:

@@ -213,6 +213,38 @@ class TestLibvirtFailClosed:
         assert unresolved_ip == "pending"
 
 
+@pytest.mark.parametrize("failed_stage", ["start", "inspect"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_docker_partial_creation_is_cleaned_or_reports_handle(
+    monkeypatch, failed_stage, cleanup_fails
+):
+    import json
+
+    from app.infrastructure import docker
+    from app.infrastructure.docker import DockerError
+
+    container_id = "f" * 64
+    called = []
+
+    async def engine_request(method, path, body=None):
+        called.append((method, path))
+        if method == "POST" and "/containers/create?" in path:
+            return 201, json.dumps({"Id": container_id}).encode()
+        if method == "POST" and path.endswith("/start"):
+            return (500 if failed_stage == "start" else 204), b""
+        if method == "GET" and path.endswith("/json"):
+            return 200, json.dumps({"NetworkSettings": {"Networks": {}}}).encode()
+        if method == "DELETE":
+            return (500 if cleanup_fails else 204), b""
+        raise AssertionError(f"unexpected Docker call: {method} {path}")
+
+    monkeypatch.setattr(docker, "_request", engine_request)
+    with pytest.raises(DockerError) as raised:
+        await docker.create_and_start_container("lab-test", "alpine:3.20", "lab-net")
+    assert raised.value.provider_ref == (container_id if cleanup_fails else None)
+    assert ("DELETE", f"/v1.24/containers/{container_id}?force=1&v=1") in called
+
+
 def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
     """Lifecycle ops must target the provider recorded on the lab, so a lab
     provisioned under Docker is not sent to Proxmox after a config switch."""
