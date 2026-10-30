@@ -44,8 +44,9 @@ use cyberlab_security_core::lab_leases::{
     extend as extend_lab_lease, LabExtendRequest, LabExtendResponse,
 };
 use cyberlab_security_core::lab_provisioning::{
-    claim as claim_provisioning_job, start as start_provisioning_job, ProvisioningClaimRequest,
-    ProvisioningClaimResponse,
+    claim as claim_provisioning_job, complete as complete_provisioning_job,
+    fail as fail_provisioning_job, start as start_provisioning_job, ProvisioningClaimRequest,
+    ProvisioningClaimResponse, ProvisioningCompleteRequest, ProvisioningFailRequest,
 };
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
@@ -607,6 +608,46 @@ async fn start_provisioning_job_route(
     }
 }
 
+async fn complete_provisioning_job_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ProvisioningCompleteRequest>,
+) -> Result<Json<ProvisioningClaimResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match complete_provisioning_job(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn fail_provisioning_job_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ProvisioningFailRequest>,
+) -> Result<Json<ProvisioningClaimResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match fail_provisioning_job(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -654,6 +695,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/labs/provisioning/start",
             post(start_provisioning_job_route),
+        )
+        .route(
+            "/v1/labs/provisioning/complete",
+            post(complete_provisioning_job_route),
+        )
+        .route(
+            "/v1/labs/provisioning/fail",
+            post(fail_provisioning_job_route),
         )
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))

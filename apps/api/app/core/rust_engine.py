@@ -386,6 +386,44 @@ async def start_provisioning_job_in_rust(job_id: str) -> bool:
     raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
 
 
+async def complete_provisioning_job_in_rust(
+    *, job_id: str, provider_ref: str, container_name: str,
+    flag_hash: str, flag_path: str, connection_hint: str, expiry_minutes: int,
+) -> bool:
+    """Atomically record the provider result, lease, completed job and audit."""
+    result = await _post("/v1/labs/provisioning/complete", {
+        "job_id": job_id, "provider_ref": provider_ref,
+        "container_name": container_name, "flag_hash": flag_hash,
+        "flag_path": flag_path, "connection_hint": connection_hint,
+        "expiry_minutes": expiry_minutes,
+    })
+    if not isinstance(result, dict) or set(result) != {"outcome"}:
+        raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+    if result["outcome"] == "completed":
+        return True
+    if result["outcome"] == "unavailable":
+        return False
+    raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+
+
+async def fail_provisioning_job_in_rust(
+    *, job_id: str, error_message: str, cleanup_failed: bool,
+    provider_ref: str | None,
+) -> bool:
+    """Atomically persist failure and required audit after provider compensation."""
+    result = await _post("/v1/labs/provisioning/fail", {
+        "job_id": job_id, "error_message": error_message,
+        "cleanup_failed": cleanup_failed, "provider_ref": provider_ref,
+    })
+    if not isinstance(result, dict) or set(result) != {"outcome"}:
+        raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+    if result["outcome"] == "failed":
+        return True
+    if result["outcome"] == "unavailable":
+        return False
+    raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

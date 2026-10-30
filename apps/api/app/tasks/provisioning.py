@@ -59,6 +59,16 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
         lab = await db.get(LabInstance, job.lab_instance_id)
         challenge = await db.get(Challenge, job.challenge_id)
         if not lab or not challenge:
+            if rust_managed:
+                from app.core.rust_engine import fail_provisioning_job_in_rust
+
+                await db.rollback()
+                await fail_provisioning_job_in_rust(
+                    job_id=str(job_uuid),
+                    error_message="Associated lab or challenge record missing",
+                    cleanup_failed=False, provider_ref=None,
+                )
+                return False
             job.status = "failed"
             job.error_message = "Associated lab or challenge record missing"
             await db.commit()
@@ -133,28 +143,66 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             )
             created_ref = provider_ref
 
-            lab.provider_ref = provider_ref
-            lab.container_id = provider_ref
-            lab.container_name = container_name
-            lab.flag_hash = hash_flag(flag)
-            lab.flag_path = flag_path
-            lab.connection_hint = (
+            connection_hint = (
                 f"Target {container_name} is running at {ip} on network {lab.network_name}. "
                 f"Flag location: {flag_path}. Lease valid for {expiry_minutes} minutes."
             )
-            lab.status = (await transition_lab(lab.status, LabState.RUNNING)).value
-            lab.expires_at = datetime.now(UTC) + timedelta(minutes=expiry_minutes)
+            if rust_managed:
+                from app.core.rust_engine import complete_provisioning_job_in_rust
 
-            job.status = "completed"
-            job.completed_at = datetime.now(UTC)
-            await db.commit()
-            logger.info("Successfully provisioned lab %s (job %s)", lab.id, job.id)
+                await db.rollback()
+                if not await complete_provisioning_job_in_rust(
+                    job_id=str(job_uuid),
+                    provider_ref=provider_ref, container_name=container_name,
+                    flag_hash=hash_flag(flag), flag_path=flag_path,
+                    connection_hint=connection_hint, expiry_minutes=expiry_minutes,
+                ):
+                    raise RuntimeError("Rust rejected stale provisioning completion")
+            else:
+                lab.provider_ref = provider_ref
+                lab.container_id = provider_ref
+                lab.container_name = container_name
+                lab.flag_hash = hash_flag(flag)
+                lab.flag_path = flag_path
+                lab.connection_hint = connection_hint
+                lab.status = (await transition_lab(lab.status, LabState.RUNNING)).value
+                lab.expires_at = datetime.now(UTC) + timedelta(minutes=expiry_minutes)
+                job.status = "completed"
+                job.completed_at = datetime.now(UTC)
+                await db.commit()
+            logger.info("Successfully provisioned lab %s (job %s)", lab_id, job_uuid)
             return True
 
         except HTTPException:
             # A Rust outage is not a provider failure. Keep its durable job
             # state intact for operator recovery instead of writing around it.
             await db.rollback()
+            if created_ref is not None and provider is not None:
+                # The DB transaction may have committed before the HTTP reply
+                # was lost. Check authoritative state before compensating.
+                persisted_job = await db.get(ProvisioningJob, job_uuid)
+                persisted_lab = await db.get(LabInstance, lab_id)
+                if (
+                    persisted_job is not None and persisted_lab is not None
+                    and persisted_job.status == "completed"
+                    and persisted_lab.status == LabState.RUNNING.value
+                    and persisted_lab.provider_ref == created_ref
+                ):
+                    logger.warning(
+                        "Rust completion reply lost; verified committed lab=%s job=%s",
+                        lab_id, job_uuid,
+                    )
+                    return True
+                await db.rollback()
+                try:
+                    await provider.stop_lab(created_ref)
+                    await provider.remove_lab(created_ref)
+                except Exception:
+                    logger.critical(
+                        "MANUAL RECOVERY REQUIRED: Rust completion failed and provider "
+                        "cleanup failed for lab=%s job=%s provider_ref=%s",
+                        lab_id, job_uuid, created_ref, exc_info=True,
+                    )
             raise
         except Exception as exc:
             logger.exception("Provisioning failed for lab %s (job %s)", lab_id, job_uuid)
@@ -174,6 +222,32 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
                         "Provider cleanup failed for lab %s (%s)", lab_id, created_ref
                     )
                     cleanup_error = str(cleanup_exc)
+            if rust_managed:
+                from app.core.rust_engine import fail_provisioning_job_in_rust
+
+                message = str(exc)
+                if cleanup_error:
+                    message += f"; provider cleanup failed: {cleanup_error}"
+                try:
+                    persisted = await fail_provisioning_job_in_rust(
+                        job_id=str(job_uuid), error_message=message[:4096],
+                        cleanup_failed=cleanup_error is not None,
+                        provider_ref=created_ref if cleanup_error else None,
+                    )
+                    if not persisted:
+                        logger.warning(
+                            "Stale Rust provisioning failure for job=%s lab=%s",
+                            job_uuid, lab_id,
+                        )
+                except Exception:
+                    logger.critical(
+                        "MANUAL RECOVERY REQUIRED: Rust failure transaction unavailable; "
+                        "job=%s lab=%s provider_ref=%s cleanup_failed=%s",
+                        job_uuid, lab_id, created_ref, bool(cleanup_error),
+                        exc_info=True,
+                    )
+                    raise
+                return False
             lab = await db.get(LabInstance, lab_id)
             job = await db.get(ProvisioningJob, job_uuid)
             if lab is None or job is None:

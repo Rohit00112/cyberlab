@@ -761,11 +761,13 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
                 f'ON lab_instances TO "{probe}"'
             ))
             await db.execute(text(
-                'GRANT UPDATE (status, updated_at) '
+                'GRANT UPDATE (status, updated_at, provider_ref, container_id, '
+                'container_name, flag_hash, flag_path, connection_hint, '
+                'error_message, expires_at) '
                 f'ON lab_instances TO "{probe}"'
             ))
             await db.execute(text(
-                'GRANT INSERT (id, event, user_id, target_id) '
+                'GRANT INSERT (id, event, user_id, target_id, details) '
                 f'ON audit_logs TO "{probe}"'
             ))
             await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
@@ -809,6 +811,19 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
                 "INSERT INTO audit_logs (id, event, user_id, target_id) "
                 "VALUES (gen_random_uuid(), 'lab.provisioning.reject', :uid, :lid)"
             ), {"uid": owner_id, "lid": str(worker_lab_id)})
+            await db.execute(text(
+                "UPDATE lab_instances SET provider_ref = 'mock-provider-ref', "
+                "container_id = 'mock-provider-ref', container_name = 'lab-mock', "
+                "flag_hash = :flag_hash, flag_path = '/flag.txt', "
+                "connection_hint = 'mock endpoint', error_message = NULL, "
+                "expires_at = now() + interval '30 minutes' WHERE id = :lab_id"
+            ), {"lab_id": worker_lab_id, "flag_hash": "b" * 64})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, user_id, target_id, details) "
+                "VALUES (gen_random_uuid(), 'lab.provisioning.failure', :uid, "
+                ":lid, CAST(:details AS jsonb))"
+            ), {"uid": owner_id, "lid": str(worker_lab_id),
+                "details": '{"cleanup_failed": true}'})
         finally:
             await db.rollback()
 
@@ -835,6 +850,117 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
             AuditLog.event == "lab.provisioning.start",
             AuditLog.target_id == str(worker_lab_id),
         )) == 1
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.complete",
+            AuditLog.target_id == str(worker_lab_id),
+        )) == 1
+
+    complete_endpoint = f"{ctx.rust_url}/v1/labs/provisioning/complete"
+    fail_endpoint = f"{ctx.rust_url}/v1/labs/provisioning/fail"
+    complete_payload = {
+        "job_id": str(worker_id), "provider_ref": "mock-provider-ref",
+        "container_name": "lab-mock", "flag_hash": "a" * 64,
+        "flag_path": "/flag.txt", "connection_hint": "mock endpoint",
+        "expiry_minutes": 30,
+    }
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        assert (await client.post(complete_endpoint, json=complete_payload)).status_code == 401
+        assert (await client.post(
+            complete_endpoint, json={**complete_payload, "flag_hash": "not-hex"},
+            headers=headers,
+        )).status_code == 400
+        assert (await client.post(
+            complete_endpoint, json=complete_payload, headers=headers,
+        )).json() == {"outcome": "unavailable"}
+
+    async with ctx.factory() as db:
+        failed_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        db.add(failed_lab)
+        await db.flush()
+        failed_job = ProvisioningJob(
+            lab_instance_id=failed_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        db.add(failed_job)
+        await db.commit()
+        failed_job_id, failed_lab_id = failed_job.id, failed_lab.id
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        for route, outcome in ((endpoint, "claimed"), (start_endpoint, "started")):
+            response = await client.post(
+                route, json={"job_id": str(failed_job_id)}, headers=headers,
+            )
+            assert response.status_code == 200 and response.json() == {"outcome": outcome}
+        failed_payload = {
+            "job_id": str(failed_job_id), "error_message": "provider unavailable",
+            "cleanup_failed": True, "provider_ref": "orphaned-vm",
+        }
+        assert (await client.post(
+            fail_endpoint, json={**failed_payload, "provider_ref": None},
+            headers=headers,
+        )).status_code == 400
+        response = await client.post(fail_endpoint, json=failed_payload, headers=headers)
+        assert response.status_code == 200 and response.json() == {"outcome": "failed"}
+        assert (await client.post(
+            fail_endpoint, json=failed_payload, headers=headers,
+        )).json() == {"outcome": "unavailable"}
+    async with ctx.factory() as db:
+        failed_state = await db.get(LabInstance, failed_lab_id)
+        assert failed_state.status == "failed"
+        assert failed_state.provider_ref == "orphaned-vm"
+        assert failed_state.container_id == "orphaned-vm"
+        assert (await db.get(ProvisioningJob, failed_job_id)).status == "failed"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.failure",
+            AuditLog.target_id == str(failed_lab_id),
+        )) == 1
+
+    # Mandatory audit failure rolls back both job and lab state; no partial
+    # terminal transition may escape the Rust transaction.
+    async with ctx.factory() as db:
+        failure_rollback_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        db.add(failure_rollback_lab)
+        await db.flush()
+        failure_rollback_job = ProvisioningJob(
+            lab_instance_id=failure_rollback_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        db.add(failure_rollback_job)
+        await db.commit()
+        failure_rollback_id = failure_rollback_job.id
+        failure_rollback_lab_id = failure_rollback_lab.id
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        for route, expected in ((endpoint, "claimed"), (start_endpoint, "started")):
+            response = await client.post(
+                route, json={"job_id": str(failure_rollback_id)}, headers=headers,
+            )
+            assert response.status_code == 200
+            assert response.json() == {"outcome": expected}
+    async with ctx.factory() as db:
+        await db.execute(text(
+            "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_failure "
+            "CHECK (event <> 'lab.provisioning.failure') NOT VALID"
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        response = await client.post(
+            fail_endpoint, headers=headers, json={
+                "job_id": str(failure_rollback_id),
+                "error_message": "provider failure",
+                "cleanup_failed": False, "provider_ref": None,
+            },
+        )
+        assert response.status_code == 503
+    async with ctx.factory() as db:
+        assert (await db.get(LabInstance, failure_rollback_lab_id)).status == "starting"
+        assert (await db.get(ProvisioningJob, failure_rollback_id)).status == "running"
+        await db.execute(text(
+            "ALTER TABLE audit_logs DROP CONSTRAINT block_lab_failure"
+        ))
+        await db.commit()
 
     # The starting transition must also roll back if its audit cannot persist.
     async with ctx.factory() as db:

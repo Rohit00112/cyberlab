@@ -188,3 +188,7 @@ GRANT UPDATE (status, started_at, completed_at, error_message, updated_at)
   ON public.provisioning_jobs TO cyberlab_security_writer;
 GRANT SELECT (challenge_id) ON public.lab_instances TO cyberlab_security_writer;
 GRANT UPDATE (status, updated_at) ON public.lab_instances TO cyberlab_security_writer;
+-- Terminal provisioning transactions commit provider metadata, expiry and
+-- mandatory audit together, without exposing network configuration or flags.
+GRANT UPDATE (provider_ref, container_id, container_name, flag_hash, flag_path,
+  connection_hint, error_message) ON public.lab_instances TO cyberlab_security_writer;
