@@ -676,3 +676,68 @@ async def test_provisioning_worker_preserves_python_fallback(test_db, monkeypatc
         assert (await db.get(ProvisioningJob, job_id)).status == "completed"
         result = await db.get(LabInstance, lab_id)
         assert result.status == "running" and result.provider_ref == "fallback-ref"
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_worker_compensates_if_processing_fails_after_provider_create(
+    test_db, monkeypatch, cleanup_fails
+):
+    from app.core import lab_transitions
+    from app.tasks import provisioning
+
+    user = _student(sub=f"lab-compensate-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(
+        test_db, slug=f"_lcomp_{uuid.uuid4().hex[:6]}"
+    )
+    async with test_db() as db:
+        lab = LabInstance(
+            user_id=user.id, challenge_id=challenge.id, status="queued",
+            network_name="compensation-test-network",
+        )
+        db.add(lab)
+        await db.flush()
+        job = ProvisioningJob(
+            lab_instance_id=lab.id, user_id=user.id,
+            challenge_id=challenge.id, status="pending",
+            config={"image": "alpine:3.20"},
+        )
+        db.add(job)
+        await db.commit()
+        job_id, lab_id = job.id, lab.id
+
+    settings = SimpleNamespace(rust_core_url="")
+    monkeypatch.setattr(provisioning, "get_settings", lambda: settings)
+    monkeypatch.setattr(lab_transitions, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning, "SessionLocal", test_db)
+    provider = SimpleNamespace(
+        ensure_network=AsyncMock(),
+        create_lab=AsyncMock(return_value=("compensation-ref", "192.0.2.22")),
+        stop_lab=AsyncMock(side_effect=RuntimeError("cannot stop") if cleanup_fails else None),
+        remove_lab=AsyncMock(),
+    )
+    monkeypatch.setattr(provisioning, "get_lab_provider", lambda _name: provider)
+
+    def processing_error(_flag: str) -> str:
+        raise ValueError("processing failed after creation")
+
+    monkeypatch.setattr(provisioning, "hash_flag", processing_error)
+    assert await provisioning.execute_provisioning_job(str(job_id)) is False
+    provider.create_lab.assert_awaited_once()
+    provider.stop_lab.assert_awaited_once_with("compensation-ref")
+    if cleanup_fails:
+        provider.remove_lab.assert_not_awaited()
+    else:
+        provider.remove_lab.assert_awaited_once_with("compensation-ref")
+
+    async with test_db() as db:
+        lab = await db.get(LabInstance, lab_id)
+        job = await db.get(ProvisioningJob, job_id)
+        assert lab.status == "failed" and job.status == "failed"
+        assert (lab.provider_ref == "compensation-ref") is cleanup_fails
+        assert ("cleanup failed" in lab.error_message) is cleanup_fails
+        events = (await db.scalars(select(AuditLog).where(
+            AuditLog.event == "lab.provisioning.failure"
+        ))).all()
+        assert len(events) == 1
+        assert events[0].details == {"cleanup_failed": cleanup_fails}

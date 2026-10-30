@@ -16,6 +16,7 @@ from app.core.lab_transitions import transition_lab
 from app.core.states import LabState
 from app.db.base import SessionLocal
 from app.infrastructure.factory import get_lab_provider
+from app.models.audit_logs import AuditLog
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
 from app.models.provisioning import ProvisioningJob
@@ -68,6 +69,9 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             logger.warning("Lab %s changed state after Rust job claim", lab.id)
             return False
 
+        created_ref: str | None = None
+        provider = None
+        lab_id = lab.id
         try:
             if not rust_managed:
                 # Keep the original transition guard in the Python fallback;
@@ -103,6 +107,7 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             provider_ref, ip = await provider.create_lab(
                 container_name, image, lab.network_name, cmd=cmd
             )
+            created_ref = provider_ref
 
             lab.provider_ref = provider_ref
             lab.container_id = provider_ref
@@ -128,12 +133,39 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             await db.rollback()
             raise
         except Exception as exc:
-            logger.exception("Provisioning failed for lab %s (job %s)", lab.id, job.id)
+            logger.exception("Provisioning failed for lab %s (job %s)", lab_id, job_uuid)
+            await db.rollback()
+            cleanup_error: str | None = None
+            if created_ref is not None and provider is not None:
+                try:
+                    await provider.stop_lab(created_ref)
+                    await provider.remove_lab(created_ref)
+                except Exception as cleanup_exc:
+                    # Persist the provider handle for an administrator. A
+                    # failed cleanup must never silently orphan a live lab.
+                    logger.exception(
+                        "Provider cleanup failed for lab %s (%s)", lab_id, created_ref
+                    )
+                    cleanup_error = str(cleanup_exc)
+            lab = await db.get(LabInstance, lab_id)
+            job = await db.get(ProvisioningJob, job_uuid)
+            if lab is None or job is None:
+                logger.error("Provisioning failure could not load lab/job %s", job_uuid)
+                return False
             lab.status = LabState.FAILED.value
             lab.error_message = str(exc)
+            if cleanup_error:
+                lab.provider_ref = created_ref
+                lab.container_id = created_ref
+                lab.error_message += f"; provider cleanup failed: {cleanup_error}"
             job.status = "failed"
             job.completed_at = datetime.now(UTC)
-            job.error_message = str(exc)
+            job.error_message = lab.error_message
+            db.add(AuditLog(
+                event="lab.provisioning.failure", user_id=lab.user_id,
+                target_id=str(lab.id),
+                details={"cleanup_failed": cleanup_error is not None},
+            ))
             await db.commit()
             return False
 
