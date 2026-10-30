@@ -166,3 +166,6 @@ GRANT INSERT (id, competition_id, name, created_by)
 GRANT INSERT (id, team_id, user_id, role)
   ON public.team_members TO cyberlab_security_writer;
 GRANT UPDATE (team_id) ON public.competition_participants TO cyberlab_security_writer;
+-- Competition leaderboard freeze and its audit must share one transaction.
+GRANT UPDATE (freeze_leaderboard, frozen_at, updated_at)
+  ON public.competitions TO cyberlab_security_writer;

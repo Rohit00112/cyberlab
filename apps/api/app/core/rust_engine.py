@@ -244,6 +244,22 @@ async def change_competition_team_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
 
 
+async def set_competition_frozen_in_rust(
+    competition_id: str, actor_id: str, roles: list[str],
+    ip_address: str | None, frozen: bool,
+) -> None:
+    result = await _post("/v1/competitions/freeze", {
+        "competition_id": competition_id, "actor_id": actor_id,
+        "roles": roles, "ip_address": ip_address, "frozen": frozen,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    if result.get("outcome") == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if result.get("outcome") != "updated":
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

@@ -14,6 +14,9 @@ use cyberlab_security_core::catalog::{query_catalog, CatalogError, CatalogPage, 
 use cyberlab_security_core::competition::{
     transition_competition, CompetitionTransitionRequest, CompetitionTransitionResponse,
 };
+use cyberlab_security_core::competition_freeze::{
+    set_frozen, CompetitionFreezeRequest, CompetitionFreezeResponse,
+};
 use cyberlab_security_core::competition_links::{
     add as add_competition_challenge, remove as remove_competition_challenge,
     CompetitionLinkRequest, CompetitionLinkResponse,
@@ -474,6 +477,26 @@ async fn join_competition_team_route(
     }
 }
 
+async fn freeze_competition_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CompetitionFreezeRequest>,
+) -> Result<Json<CompetitionFreezeResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match set_frozen(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -544,6 +567,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/v1/competitions/teams/join",
             post(join_competition_team_route),
         )
+        .route("/v1/competitions/freeze", post(freeze_competition_route))
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))
         .route("/v1/challenges/publish", post(publish_challenge))

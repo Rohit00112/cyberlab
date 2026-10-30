@@ -324,3 +324,38 @@ async def test_rust_team_outcomes_are_validated(
             team_id=str(uuid.uuid4()) if action == "join" else None,
         )
     assert exc.value.status_code == http_status
+
+
+@pytest.mark.asyncio
+async def test_competition_freeze_python_fallback(test_db, monkeypatch):
+    monkeypatch.setattr(
+        competitions, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    async with test_db() as db:
+        competition, user = await _seed_competition(db, "finished")
+        frozen = await competitions.freeze(db, competition, user, frozen=True)
+        assert frozen.freeze_leaderboard is True
+        assert frozen.frozen_at is not None
+        unfrozen = await competitions.freeze(db, competition, user, frozen=False)
+        assert unfrozen.freeze_leaderboard is False
+        assert unfrozen.frozen_at is None
+
+
+@pytest.mark.parametrize(
+    ("result", "http_status"),
+    [
+        ({"outcome": "not_found"}, 404),
+        ({"outcome": "unexpected"}, 503),
+        ({"outcome": None}, 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_competition_freeze_outcomes_fail_closed(
+    monkeypatch, result, http_status
+):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=result))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.set_competition_frozen_in_rust(
+            str(uuid.uuid4()), str(uuid.uuid4()), ["faculty"], None, True
+        )
+    assert exc.value.status_code == http_status

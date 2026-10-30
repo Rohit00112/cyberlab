@@ -1760,3 +1760,172 @@ async def test_rust_competition_team_writes_are_atomic_and_api_compatible(
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_competition_freeze_is_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, _, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=organizer_id, keycloak_sub="freeze-faculty", roles=["faculty"],
+    )
+    async with ctx.factory() as db:
+        finished = Competition(
+            slug="freeze-finished", title="Finished competition",
+            status="finished", created_by=organizer_id,
+        )
+        rollback = Competition(
+            slug="freeze-rollback", title="Freeze audit rollback",
+            status="draft", created_by=organizer_id,
+        )
+        db.add_all([finished, rollback])
+        await db.commit()
+        finished_id, rollback_id = finished.id, rollback.id
+    internal = f"{ctx.rust_url}/v1/competitions/freeze"
+    request_data = {
+        "competition_id": str(finished_id),
+        "actor_id": str(organizer_id), "roles": ["faculty"],
+        "ip_address": "127.0.0.1", "frozen": True,
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            first = await client.post(
+                f"/api/v1/competitions/{finished_id}/freeze",
+            )
+            assert first.status_code == 200, first.text
+            assert first.json()["status"] == "finished"
+            assert first.json()["freeze_leaderboard"] is True
+            assert first.json()["frozen_at"] is not None
+            repeated = await client.post(
+                f"/api/v1/competitions/{finished_id}/freeze",
+            )
+            assert repeated.status_code == 200, repeated.text
+            assert repeated.json()["freeze_leaderboard"] is True
+            unfrozen = await client.post(
+                f"/api/v1/competitions/{finished_id}/unfreeze",
+            )
+            assert unfrozen.status_code == 200, unfrozen.text
+            assert unfrozen.json()["freeze_leaderboard"] is False
+            assert unfrozen.json()["frozen_at"] is None
+        async with ctx.factory() as db:
+            saved = await db.get(Competition, finished_id)
+            assert saved.freeze_leaderboard is False
+            assert saved.frozen_at is None
+            audits = (await db.scalars(select(AuditLog).where(
+                AuditLog.event.in_(["competition.freeze", "competition.unfreeze"]),
+            ))).all()
+            assert len(audits) == 3
+            assert sum(a.event == "competition.freeze" for a in audits) == 2
+            assert all(a.target_id == "freeze-finished" for a in audits)
+
+        async with httpx.AsyncClient(timeout=2) as client:
+            missing = await client.post(internal, json=request_data)
+            assert missing.status_code == 401
+            forbidden = await client.post(
+                internal, json={**request_data, "roles": ["student"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden.status_code == 403
+            invalid = await client.post(
+                internal, json={**request_data, "actor_id": "not-a-uuid"},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert invalid.status_code == 400
+            absent = await client.post(
+                internal,
+                json={**request_data, "competition_id": str(uuid.uuid4())},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert absent.status_code == 200
+            assert absent.json()["outcome"] == "not_found"
+
+        # Exercise the exact write operations with a disposable, column-scoped
+        # NOLOGIN role; rolling back also removes the temporary PostgreSQL role.
+        probe = f"cyberlab_freeze_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                await db.execute(text(
+                    f'GRANT SELECT (id, slug) ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (freeze_leaderboard, frozen_at, updated_at) '
+                    f'ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{probe}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                slug = await db.scalar(text(
+                    "SELECT slug FROM competitions WHERE id=:cid FOR UPDATE"
+                ), {"cid": rollback_id})
+                assert slug == "freeze-rollback"
+                await db.execute(text(
+                    "UPDATE competitions SET freeze_leaderboard=true, "
+                    "frozen_at=now(), updated_at=now() WHERE id=:cid"
+                ), {"cid": rollback_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                    "VALUES (gen_random_uuid(), 'competition.freeze', :uid, :target)"
+                ), {"uid": organizer_id, "target": slug})
+            finally:
+                await db.rollback()
+
+        # A failed audit must revert both the boolean and timestamp updates.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_freeze "
+                "CHECK (event <> 'competition.freeze') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failure = await client.post(
+                f"/api/v1/competitions/{rollback_id}/freeze",
+            )
+            assert failure.status_code == 503
+        async with ctx.factory() as db:
+            unchanged = await db.get(Competition, rollback_id)
+            assert unchanged.freeze_leaderboard is False
+            assert unchanged.frozen_at is None
+            await db.execute(text("ALTER TABLE audit_logs DROP CONSTRAINT block_freeze"))
+            unchanged.freeze_leaderboard = True
+            unchanged.frozen_at = datetime.now(UTC)
+            await db.commit()
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_unfreeze "
+                "CHECK (event <> 'competition.unfreeze') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed_unfreeze = await client.post(
+                f"/api/v1/competitions/{rollback_id}/unfreeze",
+            )
+            assert failed_unfreeze.status_code == 503
+        async with ctx.factory() as db:
+            unchanged = await db.get(Competition, rollback_id)
+            assert unchanged.freeze_leaderboard is True
+            assert unchanged.frozen_at is not None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)

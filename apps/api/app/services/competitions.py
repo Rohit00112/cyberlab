@@ -514,6 +514,19 @@ async def freeze(
     frozen: bool,
     request: Request | None = None,
 ) -> CompetitionOut:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import set_competition_frozen_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        await set_competition_frozen_in_rust(
+            str(competition_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None, frozen,
+        )
+        refreshed = await db.get(Competition, competition_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        return await _to_out(db, refreshed, user=user)
     competition.freeze_leaderboard = frozen
     competition.frozen_at = datetime.now(UTC) if frozen else None
     await db.commit()
@@ -525,6 +538,7 @@ async def freeze(
         target_id=competition.slug,
         request=request,
     )
+    await db.refresh(competition)
     return await _to_out(db, competition, user=user)
 
 
