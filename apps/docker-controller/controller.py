@@ -22,6 +22,8 @@ MAX_BODY = 65536
 NETWORK = re.compile(r"cyberlab-[0-9a-f]{8}\Z")
 CONTAINER = re.compile(r"[0-9a-f]{64}\Z")
 LAB_NAME = re.compile(r"lab-[0-9a-f]{8}-[0-9a-f]{8}\Z")
+MANAGED_LABEL = "iic.cyberlab.managed"
+MAX_INSPECT_BYTES = 2 * 1024 * 1024
 
 
 class Denied(ValueError):
@@ -72,7 +74,7 @@ def authorize(method: str, target: str, payload: bytes) -> None:
         except (UnicodeDecodeError, ValueError) as exc:
             raise Denied("invalid container request") from exc
         if not isinstance(data, dict) or set(data) != {
-            "Image", "Cmd", "Tty", "AttachStdout", "HostConfig"
+            "Image", "Cmd", "Tty", "AttachStdout", "Labels", "HostConfig"
         }:
             raise Denied("unrecognized container options")
         host = data["HostConfig"]
@@ -84,6 +86,7 @@ def authorize(method: str, target: str, payload: bytes) -> None:
             or not all(isinstance(v, str) and len(v) <= 8192 for v in data["Cmd"])
             or data["Tty"] is not True
             or data["AttachStdout"] is not False
+            or data["Labels"] != {MANAGED_LABEL: "true"}
             or not isinstance(host, dict)
             or not _network(host.get("NetworkMode"))
             or set(host) - {"NetworkMode", "NanoCpus", "Memory", "MemorySwap", "PidsLimit"}
@@ -128,6 +131,86 @@ def authorize(method: str, target: str, payload: bytes) -> None:
     raise Denied("Docker operation is not permitted")
 
 
+def _decode_chunked(body: bytes) -> bytes:
+    result = bytearray()
+    while True:
+        line, separator, remaining = body.partition(b"\r\n")
+        if not separator:
+            raise Denied("invalid Docker inspection response")
+        try:
+            size = int(line.split(b";", 1)[0], 16)
+        except ValueError as exc:
+            raise Denied("invalid Docker inspection chunk") from exc
+        if size < 0 or len(remaining) < size + 2 or remaining[size:size + 2] != b"\r\n":
+            raise Denied("truncated Docker inspection chunk")
+        result.extend(remaining[:size])
+        if size == 0:
+            return bytes(result)
+        body = remaining[size + 2:]
+
+
+async def _require_owned_container(container_id: str) -> None:
+    """Read Engine metadata privately before allowing a privileged operation.
+
+    The caller cannot supply an ownership claim: it must already exist on the
+    actual container. Never proxy this internal inspection response to clients.
+    """
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_unix_connection(ENGINE_SOCKET), 5
+    )
+    try:
+        request = (
+            f"GET /v1.24/containers/{container_id}/json HTTP/1.1\r\n"
+            "Host: docker\r\nConnection: close\r\n\r\n"
+        ).encode("ascii")
+        writer.write(request)
+        await writer.drain()
+        pieces = []
+        total = 0
+        while chunk := await asyncio.wait_for(reader.read(65536), 10):
+            total += len(chunk)
+            if total > MAX_INSPECT_BYTES:
+                raise Denied("oversized Docker inspection response")
+            pieces.append(chunk)
+        header, separator, body = b"".join(pieces).partition(b"\r\n\r\n")
+        if not separator:
+            raise Denied("invalid Docker inspection response")
+        first_line, _, header_lines = header.partition(b"\r\n")
+        if not first_line.startswith(b"HTTP/1.1 200 "):
+            raise Denied("container ownership could not be verified")
+        if b"transfer-encoding: chunked" in header_lines.lower():
+            body = _decode_chunked(body)
+        try:
+            info = json.loads(body)
+        except (ValueError, UnicodeError) as exc:
+            raise Denied("invalid Docker container metadata") from exc
+        if not isinstance(info, dict):
+            raise Denied("invalid Docker container metadata")
+        config = info.get("Config")
+        host_config = info.get("HostConfig")
+        raw_name = info.get("Name")
+        if (
+            not isinstance(config, dict)
+            or not isinstance(host_config, dict)
+            or not isinstance(raw_name, str)
+        ):
+            raise Denied("invalid Docker container metadata")
+        labels = config.get("Labels")
+        name = raw_name.removeprefix("/")
+        network = host_config.get("NetworkMode")
+        if (
+            not isinstance(labels, dict)
+            or labels.get(MANAGED_LABEL) != "true"
+            or not isinstance(name, str)
+            or not LAB_NAME.fullmatch(name)
+            or not _network(network)
+        ):
+            raise Denied("container is not a managed CyberLab environment")
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     upstream_writer = None
     try:
@@ -151,6 +234,12 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
             raise Denied("invalid request body length")
         payload = await asyncio.wait_for(reader.readexactly(int(length_text)), 10)
         authorize(method, target, payload)
+        match = re.fullmatch(
+            r"/v1\.24/containers/([0-9a-f]{64})(?:/(?:start|stop|json|logs))?",
+            urlsplit(target).path,
+        )
+        if match:
+            await _require_owned_container(match[1])
         upstream_reader, upstream_writer = await asyncio.wait_for(
             asyncio.open_unix_connection(ENGINE_SOCKET), 5
         )

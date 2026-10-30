@@ -19,6 +19,7 @@ def create_payload():
         "Cmd": ["sh", "-c", "sleep infinity"],
         "Tty": True,
         "AttachStdout": False,
+        "Labels": {"iic.cyberlab.managed": "true"},
         "HostConfig": {
             "NetworkMode": NET,
             "NanoCpus": 1_000_000_000,
@@ -80,6 +81,22 @@ class AuthorizationTests(unittest.TestCase):
                     json.dumps(body).encode()
                 )
 
+    def test_cannot_forge_or_omit_managed_label(self):
+        for labels in ({}, {"iic.cyberlab.managed": "false"}, {"other": "true"}):
+            body = create_payload()
+            body["Labels"] = labels
+            with self.subTest(labels=labels), self.assertRaises(controller.Denied):
+                controller.authorize(
+                    "POST", f"/v1.24/containers/create?name={NAME}",
+                    json.dumps(body).encode(),
+                )
+
+    def test_chunked_inspection_parser_fails_closed(self):
+        self.assertEqual(controller._decode_chunked(b"4\r\ntest\r\n0\r\n\r\n"), b"test")
+        for body in (b"bad\r\ntext", b"4\r\ntes", b"3\r\nabcXX0\r\n\r\n"):
+            with self.subTest(body=body), self.assertRaises(controller.Denied):
+                controller._decode_chunked(body)
+
 
 class ProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_allowed_request_is_forwarded_and_denied_request_is_not(self):
@@ -120,6 +137,57 @@ class ProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
                 allowed = await send(b"GET /_ping HTTP/1.1\r\nHost: docker\r\n\r\n")
                 self.assertIn(b"200 OK", allowed)
                 self.assertEqual(len(requests), 1)
+            finally:
+                service.close()
+                engine.close()
+                await service.wait_closed()
+                await engine.wait_closed()
+
+    async def test_container_operations_require_engine_verified_ownership(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine_path = str(Path(temp_dir) / "engine.sock")
+            control_path = str(Path(temp_dir) / "control.sock")
+            requests = []
+            owned = True
+
+            async def fake_engine(reader, writer):
+                raw = await reader.readuntil(b"\r\n\r\n")
+                requests.append(raw.split(b"\r\n", 1)[0])
+                if raw.split(b"\r\n", 1)[0].endswith(b"/json HTTP/1.1"):
+                    details = json.dumps({
+                        "Name": f"/{NAME}",
+                        "Config": {"Labels": {"iic.cyberlab.managed": "true" if owned else "false"}},
+                        "HostConfig": {"NetworkMode": NET},
+                    }).encode()
+                    reply = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(details)).encode() + b"\r\n\r\n" + details
+                else:
+                    reply = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+                writer.write(reply)
+                await writer.drain()
+                writer.close()
+                await writer.wait_closed()
+
+            engine = await asyncio.start_unix_server(fake_engine, engine_path)
+            controller.ENGINE_SOCKET = engine_path
+            service = await asyncio.start_unix_server(controller._handle, control_path)
+            try:
+                async def stop():
+                    reader, writer = await asyncio.open_unix_connection(control_path)
+                    writer.write((
+                        f"POST /v1.24/containers/{CID}/stop?t=2 HTTP/1.1\r\n"
+                        "Host: docker\r\n\r\n"
+                    ).encode())
+                    await writer.drain()
+                    result = await reader.read()
+                    writer.close()
+                    await writer.wait_closed()
+                    return result
+
+                self.assertIn(b"204 No Content", await stop())
+                self.assertEqual(len(requests), 2)
+                owned = False
+                self.assertIn(b"403", (await stop()).split(b"\r\n", 1)[0])
+                self.assertEqual(len(requests), 3)  # No forwarded stop.
             finally:
                 service.close()
                 engine.close()

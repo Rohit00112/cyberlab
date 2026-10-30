@@ -580,7 +580,7 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             if now - since.replace(tzinfo=UTC) > timedelta(
                 minutes=settings.lab_provisioning_timeout_minutes
             ):
-                lab.status = "error"
+                lab.status = LabState.FAILED.value
                 lab.error_message = "Provisioning timed out."
                 if active_job:
                     active_job.status = "failed"

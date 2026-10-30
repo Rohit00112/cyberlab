@@ -87,7 +87,7 @@ async def test_sweep_flags_provisioning_stuck_lab(test_db, monkeypatch):
     assert changed == 1
     async with test_db() as db:
         lab = (await db.scalars(select(LabInstance))).one()
-        assert lab.status == "error"
+        assert lab.status == "failed"
         assert lab.error_message == "Provisioning timed out."
         assert (await db.scalars(select(AuditLog.event))).all() == [
             "lab.provisioning_timeout",
@@ -120,7 +120,7 @@ async def test_provisioning_timeout_uses_claim_time_and_fails_job_atomically(tes
     async with test_db() as db:
         assert await expire_stale_labs(db) == 1
     async with test_db() as db:
-        assert (await db.get(LabInstance, lab.id)).status == "error"
+        assert (await db.get(LabInstance, lab.id)).status == "failed"
         job = await db.get(ProvisioningJob, job_id)
         assert job.status == "failed"
         assert job.completed_at is not None

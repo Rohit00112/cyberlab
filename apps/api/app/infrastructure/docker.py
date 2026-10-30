@@ -165,6 +165,7 @@ async def create_and_start_container(
             "Cmd": cmd or ["sleep", "infinity"],
             "Tty": True,
             "AttachStdout": False,
+            "Labels": {"iic.cyberlab.managed": "true"},
             "HostConfig": host_config,
         },
     )

@@ -46,6 +46,7 @@ async def test_container_create_applies_default_resource_limits(monkeypatch):
     assert host_config["Memory"] > 0
     assert host_config["Memory"] == host_config["MemorySwap"]
     assert host_config["PidsLimit"] > 0
+    assert captured["create_body"]["Labels"] == {"iic.cyberlab.managed": "true"}
 
 
 async def test_container_create_honours_explicit_limits(monkeypatch):
