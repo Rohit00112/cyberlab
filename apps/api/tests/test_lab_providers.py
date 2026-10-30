@@ -148,6 +148,71 @@ class TestProviderFactory:
         get_lab_provider.cache_clear()
 
 
+class TestLibvirtFailClosed:
+    @pytest.mark.asyncio
+    async def test_missing_libvirt_never_claims_a_simulated_environment(self):
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        provider = LibvirtLabProvider()
+        provider._available = False
+        with pytest.raises(LabProviderError, match="libvirt-python is not installed"):
+            await provider.ensure_network("cyberlab")
+        with pytest.raises(LabProviderError, match="libvirt-python is not installed"):
+            await provider.create_lab("student-lab", "/tmp/disk.qcow2", "cyberlab")
+        with pytest.raises(LabProviderError, match="libvirt-python is not installed"):
+            await provider.stop_lab("unverified-domain")
+        with pytest.raises(LabProviderError, match="libvirt-python is not installed"):
+            await provider.remove_lab("unverified-domain")
+        with pytest.raises(LabProviderError, match="libvirt-python is not installed"):
+            await provider.inspect_ip("unverified-domain", "cyberlab")
+        assert "error" in await provider.lab_status("unverified-domain")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_failure_is_reported_not_suppressed(self):
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        class DeniedConnection:
+            def lookupByUUIDString(self, _ref):
+                raise RuntimeError("permission denied")
+
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = DeniedConnection()
+        with pytest.raises(LabProviderError, match="permission denied"):
+            await provider.stop_lab("domain-id")
+
+    @pytest.mark.asyncio
+    async def test_domain_xml_escapes_image_network_and_name(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from xml.etree import ElementTree
+
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        captured = []
+
+        class FakeConnection:
+            def createXML(self, xml, _flags):
+                captured.append(xml)
+                return type("Domain", (), {"UUIDString": lambda self: "domain-uuid"})()
+
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = FakeConnection()
+        monkeypatch.setattr(provider, "inspect_ip", AsyncMock(return_value="192.0.2.20"))
+        name = "student<&lab"
+        image = "/images/lab' <disk>.qcow2"
+        network = "lab<&network"
+        ref, ip = await provider.create_lab(name, image, network)
+        assert ref == "domain-uuid" and ip == "192.0.2.20"
+        document = ElementTree.fromstring(captured[0])
+        assert document.findtext("name") == name
+        assert document.find(".//source[@file]").attrib["file"] == image
+        assert document.find(".//source[@network]").attrib["network"] == network
+        monkeypatch.setattr(provider, "inspect_ip", AsyncMock(return_value=None))
+        _, unresolved_ip = await provider.create_lab("another-lab", image, network)
+        assert unresolved_ip == "pending"
+
+
 def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
     """Lifecycle ops must target the provider recorded on the lab, so a lab
     provisioned under Docker is not sent to Proxmox after a config switch."""
@@ -165,6 +230,22 @@ def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
 
 class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
+
+    @pytest.mark.asyncio
+    async def test_proxmox_requires_configured_bridge_before_launch(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        provider.bridge = "vmbr0"
+        request = AsyncMock(side_effect=ProxmoxError("network not found"))
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(ProxmoxError, match="vmbr0.*unavailable"):
+            await provider.ensure_network("lab-user-dynamic-network")
+        request.assert_awaited_once_with(
+            "GET", f"/api2/json/nodes/{provider.node}/network/vmbr0"
+        )
 
     def _fake_client(self, response):
         class FakeClient:

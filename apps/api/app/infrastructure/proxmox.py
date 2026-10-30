@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -97,19 +98,21 @@ class ProxmoxLabProvider(LabProvider):
             return False
 
     async def ensure_network(self, name: str) -> None:
-        """Proxmox networks are managed at the node level; this is a no-op
-        if the bridge already exists. In practice, SDN or manual VLAN
-        configuration is preferred."""
+        """Require an existing provider bridge before any VM is created.
+
+        Dynamic per-user network names belong to Docker; Proxmox guests attach
+        to the configured node bridge, which must be provisioned separately.
+        """
+        bridge = self.bridge or name
         try:
             await self._request(
-                "GET", f"/api2/json/nodes/{self.node}/network/{name}"
+                "GET", f"/api2/json/nodes/{self.node}/network/{quote(bridge, safe='')}"
             )
-        except ProxmoxError:
-            logger.warning(
-                "Network '%s' not found on node '%s'. "
-                "Proxmox networks must be pre-configured.",
-                name, self.node,
-            )
+        except ProxmoxError as exc:
+            raise ProxmoxError(
+                f"Proxmox bridge {bridge!r} on node {self.node!r} is unavailable; "
+                "configure it before provisioning"
+            ) from exc
 
     async def create_lab(
         self,

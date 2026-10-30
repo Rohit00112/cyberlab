@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from xml.sax.saxutils import escape, quoteattr
 
 from app.infrastructure.base import LabProvider, LabProviderError
 
@@ -31,12 +32,17 @@ class LibvirtLabProvider(LabProvider):
         except ImportError:
             self._libvirt = None
             logger.warning(
-                "libvirt-python is not installed. LibvirtLabProvider running in simulated mode."
+                "libvirt-python is not installed; libvirt operations are unavailable."
+            )
+
+    def _require_available(self) -> None:
+        if not self._available:
+            raise LabProviderError(
+                "libvirt-python is not installed; select the explicit fake provider for tests"
             )
 
     def _get_connection(self):
-        if not self._available:
-            return None
+        self._require_available()
         if self._conn is None:
             try:
                 self._conn = self._libvirt.open(self.uri)
@@ -59,8 +65,7 @@ class LibvirtLabProvider(LabProvider):
 
     async def ensure_network(self, name: str) -> None:
         """Ensure isolated virtual bridge/network exists in libvirt."""
-        if not self._available:
-            return
+        self._require_available()
         loop = asyncio.get_running_loop()
 
         def _sync_ensure():
@@ -73,9 +78,9 @@ class LibvirtLabProvider(LabProvider):
                 # Create isolated network XML
                 xml = f"""
                 <network>
-                  <name>{name}</name>
+                  <name>{escape(name)}</name>
                   <forward mode='nat'/>
-                  <bridge name='virbr-{name[:8]}' stp='on' delay='0'/>
+                  <bridge name={quoteattr('virbr-' + name[:8])} stp='on' delay='0'/>
                   <ip address='10.100.1.1' netmask='255.255.255.0'>
                     <dhcp>
                       <range start='10.100.1.10' end='10.100.1.254'/>
@@ -104,10 +109,7 @@ class LibvirtLabProvider(LabProvider):
         pids_limit: int | None = None,
     ) -> tuple[str, str]:
         """Clone base qcow2 disk, define transient domain, and boot VM."""
-        if not self._available:
-            # Simulated provider reference and IP for dev/test environments without KVM
-            simulated_ip = "10.100.1.50"
-            return f"kvm-{name}", simulated_ip
+        self._require_available()
 
         loop = asyncio.get_running_loop()
         memory_kib = int((memory_limit_mb or 1024) * 1024)
@@ -115,7 +117,7 @@ class LibvirtLabProvider(LabProvider):
 
         xml = f"""
         <domain type='kvm'>
-          <name>{name}</name>
+          <name>{escape(name)}</name>
           <memory unit='KiB'>{memory_kib}</memory>
           <vcpu placement='static'>{vcpus}</vcpu>
           <os>
@@ -125,11 +127,11 @@ class LibvirtLabProvider(LabProvider):
           <devices>
             <disk type='file' device='disk'>
               <driver name='qemu' type='qcow2'/>
-              <source file='{image}'/>
+              <source file={quoteattr(image)}/>
               <target dev='vda' bus='virtio'/>
             </disk>
             <interface type='network'>
-              <source network='{network}'/>
+              <source network={quoteattr(network)}/>
               <model type='virtio'/>
             </interface>
             <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
@@ -145,15 +147,16 @@ class LibvirtLabProvider(LabProvider):
 
         try:
             domain_uuid = await loop.run_in_executor(None, _sync_create)
-            ip = await self.inspect_ip(domain_uuid, network) or "10.100.1.10"
+            # DHCP leases/guest agent data may lag VM startup. Do not invent
+            # an address that might point at a different user's environment.
+            ip = await self.inspect_ip(domain_uuid, network) or "pending"
             return domain_uuid, ip
         except Exception as exc:
             raise LabProviderError(f"Failed to create libvirt domain {name}: {exc}") from exc
 
     async def stop_lab(self, provider_ref: str) -> None:
         """Gracefully shutdown or destroy the virtual machine."""
-        if not self._available:
-            return
+        self._require_available()
         loop = asyncio.get_running_loop()
 
         def _sync_stop():
@@ -162,8 +165,10 @@ class LibvirtLabProvider(LabProvider):
                 dom = conn.lookupByUUIDString(provider_ref)
                 if dom.isActive():
                     dom.destroy()
-            except Exception:
-                pass
+            except Exception as exc:
+                raise LabProviderError(
+                    f"Failed to stop libvirt domain {provider_ref}: {exc}"
+                ) from exc
 
         await loop.run_in_executor(None, _sync_stop)
 
@@ -173,8 +178,7 @@ class LibvirtLabProvider(LabProvider):
 
     async def inspect_ip(self, provider_ref: str, network: str) -> str | None:
         """Read IP address from guest agent or DHCP leases."""
-        if not self._available:
-            return "10.100.1.50"
+        self._require_available()
         loop = asyncio.get_running_loop()
 
         def _sync_inspect():
@@ -197,7 +201,7 @@ class LibvirtLabProvider(LabProvider):
     async def lab_status(self, provider_ref: str) -> dict[str, Any]:
         """Query state and uptime of the virtual machine."""
         if not self._available:
-            return {"provider": "libvirt", "status": "simulated", "domain_id": provider_ref}
+            return {"provider": "libvirt", "error": "libvirt-python is not installed"}
         loop = asyncio.get_running_loop()
 
         def _sync_status():
