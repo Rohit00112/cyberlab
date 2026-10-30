@@ -37,6 +37,7 @@ from app.models import (  # noqa: F401 (registers tables)
     Competition,
     CompetitionChallenge,
     CompetitionParticipant,
+    LabInstance,
     Skill,
     Submission,
     Team,
@@ -2466,3 +2467,195 @@ async def test_rust_auto_transitions_audit_and_retry_badge_followups(
             AuditLog.event == "competition.auto_transition",
             AuditLog.target_id == "auto-probe",
         )) == 0
+
+
+async def test_rust_lab_lease_extension_api_auth_concurrency_and_audit_rollback(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    owner_id, other_id, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+        lab_max_expiry_minutes=240,
+    )
+    from app.core import authorization
+    from app.services import labs
+
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(labs, "get_settings", lambda: settings)
+    now = datetime.now(UTC)
+    async with ctx.factory() as db:
+        running = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            expires_at=now + timedelta(minutes=30),
+        )
+        racing = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            expires_at=now + timedelta(minutes=15),
+        )
+        stopped = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+        )
+        expired = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            expires_at=now - timedelta(minutes=1),
+        )
+        rollback = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            expires_at=now + timedelta(minutes=20),
+        )
+        admin_target = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            expires_at=now + timedelta(minutes=20),
+        )
+        db.add_all([running, racing, stopped, expired, rollback, admin_target])
+        await db.commit()
+        running_id, racing_id, stopped_id = running.id, racing.id, stopped.id
+        expired_id, rollback_id = expired.id, rollback.id
+        admin_id = admin_target.id
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=owner_id, keycloak_sub="lease-test", roles=["student"],
+        permissions=["lab.launch"],
+    )
+    internal = f"{ctx.rust_url}/v1/labs/extend"
+    direct_payload = {
+        "lab_id": str(racing_id), "actor_id": str(owner_id),
+        "roles": ["student"], "ip_address": "127.0.0.1",
+        "additional_minutes": 30, "max_expiry_minutes": 240,
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            result = await client.put(
+                f"/api/v1/labs/{running_id}/extend",
+                json={"additional_minutes": 30},
+            )
+            assert result.status_code == 200, result.text
+            assert result.json()["status"] == "running"
+            updated_exp = datetime.fromisoformat(result.json()["expires_at"])
+            assert abs((updated_exp - (now + timedelta(minutes=60))).total_seconds()) < 3
+            for lab_id, expected_detail in [
+                (stopped_id, "must be running"),
+                (expired_id, "already expired"),
+            ]:
+                denied = await client.put(
+                    f"/api/v1/labs/{lab_id}/extend", json={},
+                )
+                assert denied.status_code == 400, denied.text
+                assert expected_detail in denied.json()["detail"]
+
+        async with httpx.AsyncClient(timeout=5) as client:
+            assert (await client.post(internal, json=direct_payload)).status_code == 401
+            for invalid, expected_status in [
+                ({"actor_id": str(other_id)}, 403),
+                ({"roles": ["guest"]}, 403),
+                ({"additional_minutes": 500}, 400),
+                ({"max_expiry_minutes": 0}, 400),
+            ]:
+                result = await client.post(
+                    internal, json={**direct_payload, **invalid},
+                    headers={"x-internal-token": ctx.token},
+                )
+                assert result.status_code == expected_status, result.text
+
+            admin_result = await client.post(
+                internal,
+                json={**direct_payload, "lab_id": str(admin_id),
+                      "actor_id": str(other_id), "roles": ["sysadmin"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert admin_result.status_code == 200, admin_result.text
+            assert admin_result.json()["outcome"] == "extended"
+
+            async def extend_racing():
+                return await client.post(
+                    internal, json=direct_payload,
+                    headers={"x-internal-token": ctx.token},
+                )
+
+            first, second = await asyncio.gather(extend_racing(), extend_racing())
+            assert first.status_code == second.status_code == 200
+            assert first.json()["outcome"] == second.json()["outcome"] == "extended"
+        async with ctx.factory() as db:
+            refreshed = await db.get(LabInstance, racing_id)
+            assert abs((refreshed.expires_at.replace(tzinfo=UTC) - (
+                now + timedelta(minutes=75)
+            )).total_seconds()) < 3
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.extend",
+                AuditLog.target_id == str(racing_id),
+            )) == 2
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.extend",
+                AuditLog.target_id == str(running_id),
+            )) == 1
+
+        # Check the specific SQL under a disposable restricted PostgreSQL role.
+        probe = f"cyberlab_lease_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                await db.execute(text(
+                    'GRANT SELECT (id, user_id, status, expires_at, created_at) '
+                    f'ON lab_instances TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (expires_at, updated_at) '
+                    f'ON lab_instances TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{probe}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                row = (await db.execute(text(
+                    'SELECT user_id::text, status, COALESCE(expires_at < now(), false) '
+                    'FROM lab_instances WHERE id = :lab_id FOR UPDATE'
+                ), {"lab_id": racing_id})).one()
+                assert row[0] == str(owner_id) and row[1] == "running"
+                await db.execute(text(
+                    "UPDATE lab_instances SET expires_at = LEAST("
+                    "COALESCE(expires_at, now()) + 30 * interval '1 minute', "
+                    "COALESCE(created_at, now()) + 240 * interval '1 minute'), "
+                    "updated_at = now() WHERE id = :lab_id"
+                ), {"lab_id": racing_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address) "
+                    "VALUES (gen_random_uuid(), 'lab.extend', :uid, :lid, '127.0.0.1')"
+                ), {"uid": owner_id, "lid": str(racing_id)})
+            finally:
+                await db.rollback()
+
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_extend "
+                "CHECK (event <> 'lab.extend') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=5) as client:
+            failed = await client.post(
+                internal, json={**direct_payload, "lab_id": str(rollback_id)},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert failed.status_code == 503
+        async with ctx.factory() as db:
+            unchanged = await db.get(LabInstance, rollback_id)
+            assert abs((unchanged.expires_at.replace(tzinfo=UTC) - (
+                now + timedelta(minutes=20)
+            )).total_seconds()) < 3
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.extend",
+                AuditLog.target_id == str(rollback_id),
+            )) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)

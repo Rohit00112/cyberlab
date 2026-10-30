@@ -427,12 +427,29 @@ async def extend_lab(
 ) -> LabOut:
     if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    settings = get_settings()
+    if settings.rust_core_url:
+        from app.core.rust_engine import extend_lab_in_rust
+
+        lab_id = lab.id
+        # Recheck ownership, live state and lease bounds against the database
+        # under a Rust-held row lock; commit the mutation with its audit.
+        await db.rollback()
+        await extend_lab_in_rust(
+            str(lab_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            max(5, min(additional_minutes, 120)),
+            settings.lab_max_expiry_minutes,
+        )
+        refreshed = await db.get(LabInstance, lab_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Lab not found")
+        return await _to_out(db, refreshed)
     if lab.status not in (LabState.RUNNING.value, "running"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot extend lab in status '{lab.status}' (must be running)",
         )
-    settings = get_settings()
     now = datetime.now(UTC)
     current_exp = lab.expires_at if lab.expires_at else now
     if current_exp.tzinfo is None:

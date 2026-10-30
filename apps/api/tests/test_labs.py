@@ -3,8 +3,9 @@
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import CurrentUser, get_current_user
+from app.core import rust_engine
 from app.core.config import get_settings
 from app.core.flags import hash_flag
 from app.db.base import Base
@@ -21,6 +23,7 @@ from app.infrastructure import docker as docker_module
 from app.infrastructure.docker import DockerError
 from app.main import app
 from app.models import Challenge, User  # noqa: F401  (registers tables)
+from app.models.audit_logs import AuditLog
 from app.models.labs import LabInstance
 from app.models.provisioning import ProvisioningJob
 from app.services import labs as lab_service
@@ -503,3 +506,49 @@ async def test_submit_with_someone_elses_lab_rejected(test_db, capture_flag_cmd)
         )
     assert res.status_code == 403
     app.dependency_overrides.clear()
+
+
+async def test_lab_extension_preserves_python_fallback(test_db, monkeypatch):
+    user = _student(sub=f"lab-extend-fallback-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lex_{uuid.uuid4().hex[:6]}")
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        lab_service, "get_settings",
+        lambda: SimpleNamespace(rust_core_url="", lab_max_expiry_minutes=240),
+    )
+    async with test_db() as db:
+        lab = LabInstance(
+            user_id=user.id, challenge_id=challenge.id, status="running",
+            expires_at=now + timedelta(minutes=30),
+        )
+        db.add(lab)
+        await db.commit()
+        result = await lab_service.extend_lab(db, user, lab, additional_minutes=30)
+        assert result.status == "running"
+        assert abs((result.expires_at.replace(tzinfo=UTC) - (
+            now + timedelta(minutes=60)
+        )).total_seconds()) < 3
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.extend", AuditLog.target_id == str(lab.id),
+        )) == 1
+
+
+@pytest.mark.parametrize(
+    ("reply", "http_status"),
+    [
+        ({"outcome": "not_found"}, 404),
+        ({"outcome": "not_running", "current_status": "stopped"}, 400),
+        ({"outcome": "not_running", "current_status": "untrusted"}, 503),
+        ({"outcome": "expired"}, 400),
+        ({"outcome": "untrusted"}, 503),
+        ({"outcome": "extended", "current_status": "running"}, 503),
+    ],
+)
+async def test_rust_lab_lease_outcomes_fail_closed(monkeypatch, reply, http_status):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=reply))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.extend_lab_in_rust(
+            str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, 30, 240,
+        )
+    assert exc.value.status_code == http_status

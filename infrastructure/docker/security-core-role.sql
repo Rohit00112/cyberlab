@@ -175,3 +175,7 @@ GRANT SELECT (start_at, end_at) ON public.competitions TO cyberlab_security_writ
 GRANT UPDATE (status) ON public.competitions TO cyberlab_security_writer;
 -- Automatic scheduler writes use these same restricted columns and the audit
 -- insert allowlist; no extra table-wide privileges are required.
+-- Lab lease extension: recheck the owner and current expiration under a row
+-- lock, update only the lease/timestamp, and insert the required audit atomically.
+GRANT SELECT (created_at) ON public.lab_instances TO cyberlab_security_writer;
+GRANT UPDATE (expires_at, updated_at) ON public.lab_instances TO cyberlab_security_writer;

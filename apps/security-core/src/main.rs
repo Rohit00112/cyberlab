@@ -40,6 +40,9 @@ use cyberlab_security_core::competition_writes::{
 };
 use cyberlab_security_core::creation::{create, CreateRequest, CreateResponse};
 use cyberlab_security_core::editing::{edit, EditRequest};
+use cyberlab_security_core::lab_leases::{
+    extend as extend_lab_lease, LabExtendRequest, LabExtendResponse,
+};
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
 };
@@ -540,6 +543,26 @@ async fn auto_competition_transitions_route(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
+async fn extend_lab_lease_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<LabExtendRequest>,
+) -> Result<Json<LabExtendResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match extend_lab_lease(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -579,6 +602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/verify", post(verify))
         .route("/v1/score", post(calculate))
         .route("/v1/lab-transition", post(lab_transition))
+        .route("/v1/labs/extend", post(extend_lab_lease_route))
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))
         .route(

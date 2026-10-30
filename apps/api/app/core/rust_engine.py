@@ -327,6 +327,41 @@ async def auto_transition_competitions_in_rust() -> int:
     return changed
 
 
+async def extend_lab_in_rust(
+    lab_id: str, actor_id: str, roles: list[str], ip_address: str | None,
+    additional_minutes: int, max_expiry_minutes: int,
+) -> None:
+    result = await _post("/v1/labs/extend", {
+        "lab_id": lab_id, "actor_id": actor_id, "roles": roles,
+        "ip_address": ip_address, "additional_minutes": additional_minutes,
+        "max_expiry_minutes": max_expiry_minutes,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Lab not found")
+    if outcome == "not_running":
+        current = result.get("current_status")
+        if current not in {
+            "queued", "provisioning", "starting", "stopping", "stopped",
+            "resetting", "terminating", "terminated", "failed", "expired",
+            "error",
+        }:
+            raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot extend lab in status '{current}' (must be running)",
+        )
+    if outcome == "expired":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot extend an already expired lab. Please reset or relaunch.",
+        )
+    if outcome != "extended" or result.get("current_status") is not None:
+        raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:
