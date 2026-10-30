@@ -184,6 +184,15 @@ class ProxmoxLabProvider(LabProvider):
         ``image`` is interpreted as the Proxmox template VMID to clone from.
         Returns (new_vmid_str, ip_address).
         """
+        if cmd:
+            # The Docker adapter executes lab_flag_command inside its new
+            # container. A Proxmox clone has no equivalent guest-initializer
+            # wired up yet, so silently dropping the command would claim that
+            # a flag-bearing challenge exists when no flag was installed.
+            raise ProxmoxError(
+                "Proxmox guest initialization is not configured; "
+                "cannot install a per-lab challenge flag"
+            )
         template_vmid = self._vmid(image)
         # Get next available VMID
         next_id_data = await self._request(

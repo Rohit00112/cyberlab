@@ -150,6 +150,22 @@ class TestProviderFactory:
 
 class TestLibvirtFailClosed:
     @pytest.mark.asyncio
+    async def test_flag_initialization_is_required_before_defining_a_vm(self):
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        class Connection:
+            def createXML(self, _xml, _flags):
+                raise AssertionError("VM must not be created without a flag initializer")
+
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = Connection()
+        with pytest.raises(LabProviderError, match="cannot install a per-lab challenge flag"):
+            await provider.create_lab(
+                "flag-lab", "/images/lab.qcow2", "lab-net", cmd=["sh", "-c", "true"]
+            )
+
+    @pytest.mark.asyncio
     async def test_missing_libvirt_never_claims_a_simulated_environment(self):
         from app.infrastructure.libvirt_provider import LibvirtLabProvider
 
@@ -262,6 +278,19 @@ def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
 
 class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
+
+    @pytest.mark.asyncio
+    async def test_flag_initialization_is_required_before_cloning_a_vm(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        request = AsyncMock(side_effect=AssertionError("VM must not be cloned"))
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(ProxmoxError, match="cannot install a per-lab challenge flag"):
+            await provider.create_lab("flag-lab", "900", "lab-net", cmd=["sh", "-c", "true"])
+        request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_proxmox_waits_for_task_result_and_rejects_failure(self, monkeypatch):

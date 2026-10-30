@@ -110,6 +110,13 @@ class LibvirtLabProvider(LabProvider):
     ) -> tuple[str, str]:
         """Clone base qcow2 disk, define transient domain, and boot VM."""
         self._require_available()
+        if cmd:
+            # No guest-agent/cloud-init execution path currently injects the
+            # per-lab flag command. Refuse the VM before defining a domain.
+            raise LabProviderError(
+                "libvirt guest initialization is not configured; "
+                "cannot install a per-lab challenge flag"
+            )
 
         loop = asyncio.get_running_loop()
         memory_kib = int((memory_limit_mb or 1024) * 1024)
