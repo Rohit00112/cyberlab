@@ -263,6 +263,84 @@ def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
 class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
 
+    @pytest.mark.parametrize("overrides,expected_error", [
+        ({"proxmox_endpoint": "http://pve.example:8006"}, "HTTPS"),
+        ({"environment": "production", "proxmox_verify_ssl": False}, "TLS"),
+        ({"environment": "production", "proxmox_user": ""}, "credentials"),
+        ({"proxmox_node": "pve/../other"}, "node"),
+        ({"proxmox_bridge": "vmbr0,firewall=0"}, "bridge"),
+    ])
+    def test_invalid_proxmox_config_fails_before_any_api_call(
+        self, monkeypatch, overrides, expected_error
+    ):
+        from app.core.config import get_settings
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        base = get_settings().model_copy(update={
+            "proxmox_user": "configured-user",
+            "proxmox_token_uuid": "configured-token",
+            **overrides,
+        })
+        monkeypatch.setattr("app.infrastructure.proxmox.get_settings", lambda: base)
+        with pytest.raises(ProxmoxError, match=expected_error):
+            ProxmoxLabProvider()
+
+    @pytest.mark.asyncio
+    async def test_invalid_vmid_never_reaches_proxmox_api(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        request = AsyncMock()
+        monkeypatch.setattr(provider, "_request", request)
+        malicious_id = "100/../../nodes/other"
+        with pytest.raises(ProxmoxError, match="VMID"):
+            await provider.create_lab("lab", malicious_id, "lab-network")
+        with pytest.raises(ProxmoxError, match="VMID"):
+            await provider.stop_lab(malicious_id)
+        with pytest.raises(ProxmoxError, match="VMID"):
+            await provider.remove_lab(malicious_id)
+        with pytest.raises(ProxmoxError, match="VMID"):
+            await provider.inspect_ip(malicious_id, "lab-network")
+        assert "error" in await provider.lab_status(malicious_id)
+        assert "unavailable" in await provider.lab_logs(malicious_id)
+        request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_next_vmid_cannot_be_used_for_clone(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        request = AsyncMock(return_value="../invalid")
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(ProxmoxError, match="VMID"):
+            await provider.create_lab("lab", "900", "lab-network")
+        request.assert_awaited_once_with("GET", "/api2/json/cluster/nextid")
+
+    @pytest.mark.asyncio
+    async def test_remove_does_not_delete_when_stop_is_unconfirmed(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+
+        async def request(method, path, **kwargs):
+            if method == "POST" and path.endswith("/status/stop"):
+                raise ProxmoxError("cannot stop VM")
+            if method == "GET" and path.endswith("/status/current"):
+                return {"status": "running"}
+            raise AssertionError(f"unexpected Proxmox operation: {method} {path}")
+
+        mocked = AsyncMock(side_effect=request)
+        monkeypatch.setattr(provider, "_request", mocked)
+        with pytest.raises(ProxmoxError, match="not confirmed"):
+            await provider.remove_lab("120")
+        assert mocked.await_count == 2
+
     @pytest.mark.asyncio
     async def test_proxmox_requires_configured_bridge_before_launch(self, monkeypatch):
         from unittest.mock import AsyncMock

@@ -15,8 +15,9 @@ Requires Proxmox VE credentials in settings (env vars):
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -39,7 +40,20 @@ class ProxmoxLabProvider(LabProvider):
         self.node = settings.proxmox_node
         self.storage = settings.proxmox_storage
         self.bridge = settings.proxmox_bridge
+        endpoint = urlsplit(self.api_url)
+        if endpoint.scheme != "https" or not endpoint.hostname:
+            raise ProxmoxError("Proxmox API endpoint must use HTTPS")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", self.node):
+            raise ProxmoxError("Invalid Proxmox node name")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}", self.bridge):
+            raise ProxmoxError("Invalid Proxmox bridge name")
         self.verify_ssl = settings.proxmox_verify_ssl
+        if settings.is_production and not self.verify_ssl:
+            raise ProxmoxError("Proxmox TLS certificate verification is required in production")
+        if settings.is_production and (
+            not settings.proxmox_user or not settings.proxmox_token_uuid
+        ):
+            raise ProxmoxError("Proxmox API token credentials are required in production")
         # PVE API token header: PVEAPIToken=user@realm!tokenname=token-uuid
         self.headers = {
             "Authorization": (
@@ -47,6 +61,14 @@ class ProxmoxLabProvider(LabProvider):
                 f"={settings.proxmox_token_uuid}"
             ),
         }
+
+    @staticmethod
+    def _vmid(value: str | int) -> str:
+        """Validate a VMID before inserting it into a privileged API path."""
+        vmid = str(value)
+        if not re.fullmatch(r"[1-9][0-9]{2,8}", vmid):
+            raise ProxmoxError("Proxmox VMID must be a numeric identifier >= 100")
+        return vmid
 
     async def _request(
         self,
@@ -130,11 +152,12 @@ class ProxmoxLabProvider(LabProvider):
         ``image`` is interpreted as the Proxmox template VMID to clone from.
         Returns (new_vmid_str, ip_address).
         """
+        template_vmid = self._vmid(image)
         # Get next available VMID
         next_id_data = await self._request(
             "GET", "/api2/json/cluster/nextid"
         )
-        new_vmid = str(next_id_data) if isinstance(next_id_data, int) else str(next_id_data)
+        new_vmid = self._vmid(next_id_data)
 
         # Clone from template; use configured storage for the full clone
         clone_params: dict[str, Any] = {
@@ -145,7 +168,7 @@ class ProxmoxLabProvider(LabProvider):
         }
         await self._request(
             "POST",
-            f"/api2/json/nodes/{self.node}/qemu/{image}/clone",
+            f"/api2/json/nodes/{self.node}/qemu/{template_vmid}/clone",
             json_data=clone_params,
         )
 
@@ -182,6 +205,7 @@ class ProxmoxLabProvider(LabProvider):
         """Poll the QEMU guest agent for the VM's IP address."""
         import asyncio
 
+        vmid = self._vmid(vmid)
         for _ in range(retries):
             try:
                 data = await self._request(
@@ -209,17 +233,23 @@ class ProxmoxLabProvider(LabProvider):
         return None
 
     async def stop_lab(self, provider_ref: str) -> None:
+        provider_ref = self._vmid(provider_ref)
         await self._request(
             "POST",
             f"/api2/json/nodes/{self.node}/qemu/{provider_ref}/status/stop",
         )
 
     async def remove_lab(self, provider_ref: str) -> None:
+        provider_ref = self._vmid(provider_ref)
         # Stop first if running
         try:
             await self.stop_lab(provider_ref)
-        except ProxmoxError:
-            pass
+        except ProxmoxError as exc:
+            current = await self.lab_status(provider_ref)
+            if current.get("status") != "stopped":
+                raise ProxmoxError(
+                    f"Cannot remove VM {provider_ref}: stop was not confirmed"
+                ) from exc
         await self._request(
             "DELETE",
             f"/api2/json/nodes/{self.node}/qemu/{provider_ref}",
@@ -230,6 +260,7 @@ class ProxmoxLabProvider(LabProvider):
 
     async def lab_status(self, provider_ref: str) -> dict[str, Any]:
         try:
+            provider_ref = self._vmid(provider_ref)
             data = await self._request(
                 "GET",
                 f"/api2/json/nodes/{self.node}/qemu/{provider_ref}/status/current",
@@ -250,6 +281,7 @@ class ProxmoxLabProvider(LabProvider):
         """Proxmox VMs don't have a unified log stream like Docker.
         Return the most recent syslog lines from the guest agent if available."""
         try:
+            provider_ref = self._vmid(provider_ref)
             data = await self._request(
                 "POST",
                 f"/api2/json/nodes/{self.node}/qemu/{provider_ref}/agent/exec",
