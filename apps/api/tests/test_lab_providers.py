@@ -451,6 +451,8 @@ class TestProxmoxRequest:
 
         async def request(method, path, **kwargs):
             calls.append((method, path, kwargs))
+            if path.endswith("/agent/ping"):
+                return {"result": {}}
             if path.endswith("/agent/exec"):
                 return {"pid": 4242}
             if path.endswith("/agent/exec-status"):
@@ -459,13 +461,16 @@ class TestProxmoxRequest:
 
         monkeypatch.setattr(provider, "_request", request)
         await provider._install_guest_flag("135", command)
-        assert calls[0][2]["params"] == [
+        assert calls[0][0] == "POST" and calls[0][1].endswith("/agent/ping")
+        assert calls[1][2]["params"] == [
             ("command", "/bin/sh"), ("command", "-c"),
             ("command", command[2]),
         ]
-        assert calls[1][2]["params"] == {"pid": 4242}
+        assert calls[2][2]["params"] == {"pid": 4242}
 
         async def failed_request(method, path, **kwargs):
+            if path.endswith("/agent/ping"):
+                return {"result": {}}
             if path.endswith("/agent/exec"):
                 return {"pid": 4242}
             return {"exited": True, "exitcode": 1}

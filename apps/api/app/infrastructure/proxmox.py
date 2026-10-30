@@ -161,8 +161,20 @@ class ProxmoxLabProvider(LabProvider):
         except ValueError as exc:
             raise ProxmoxError("Invalid guest flag initializer") from exc
         base = f"/api2/json/nodes/{self.node}/qemu/{self._vmid(vmid)}/agent"
+        last_ping_error: ProxmoxError | None = None
         try:
-            async with asyncio.timeout(90):
+            async with asyncio.timeout(120):
+                # A successful qmstart task means the hypervisor accepted the
+                # start request; the guest OS and qemu-guest-agent may still
+                # need time to boot before guest-exec becomes available.
+                while True:
+                    try:
+                        await self._request("POST", f"{base}/ping")
+                        break
+                    except ProxmoxError as exc:
+                        last_ping_error = exc
+                        await asyncio.sleep(2)
+
                 # PVE declares command as an alist: repeated command query fields,
                 # avoiding a second shell or interpretation by the Proxmox host.
                 started = await self._request(
@@ -189,7 +201,10 @@ class ProxmoxLabProvider(LabProvider):
                         return
                     await asyncio.sleep(0.5)
         except TimeoutError as exc:
-            raise ProxmoxError("Guest flag initialization exceeded 90 seconds") from exc
+            detail = f"; last agent error: {last_ping_error}" if last_ping_error else ""
+            raise ProxmoxError(
+                f"Guest flag initialization exceeded 120 seconds{detail}"
+            ) from exc
 
     async def ensure_network(self, name: str) -> None:
         """Require an existing provider bridge before any VM is created.

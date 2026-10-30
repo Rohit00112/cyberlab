@@ -8,6 +8,7 @@ infrastructure needed to launch labs is actually present:
   * configured storage exists (clone target)
   * configured bridge exists on the node (VM network)
   * configured template VMID (LAB_IMAGE) exists on the node
+  * token has effective privileges to clone, configure and run lab VMs
 
 Run from anywhere the API settings are available (repo root .env):
 
@@ -21,6 +22,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 API_DIR = Path(__file__).resolve().parents[1]
 if str(API_DIR) not in sys.path:
@@ -69,6 +71,52 @@ class ProxmoxCheck:
         except ValueError as exc:
             raise RuntimeError(f"non-JSON body ({response.status_code})") from exc
         return body.get("data") if isinstance(body, dict) else body
+
+    async def _check_permissions(
+        self, next_vmid: str | None, bridges: set[str] | None = None
+    ) -> None:
+        """Check token's effective rights on the source, target and storage.
+
+        Privilege-separated tokens do not inherit the root user's permissions;
+        a successful API login and readable VM inventory are insufficient.
+        """
+        checks = [
+            ("perm-clone", f"/vms/{self.template_vmid}", {"VM.Clone"}),
+            ("perm-storage", f"/storage/{self.storage}", {"Datastore.AllocateSpace"}),
+        ]
+        if next_vmid is not None:
+            checks.append((
+                "perm-target", f"/vms/{next_vmid}",
+                {
+                    "VM.Allocate", "VM.Config.CPU", "VM.Config.Memory",
+                    "VM.Config.Network", "VM.PowerMgmt",
+                    "VM.GuestAgent.Unrestricted",
+                },
+            ))
+        for bridge in sorted(bridges or {self.bridge}):
+            checks.append((
+                "perm-bridge", f"/sdn/zones/localnetwork/{bridge}", {"SDN.Use"},
+            ))
+
+        for label, path, required in checks:
+            try:
+                data = self._data(await self._get(
+                    f"/access/permissions?path={quote(path, safe='')}"
+                ))
+                if not isinstance(data, dict) or not isinstance(data.get(path), dict):
+                    raise RuntimeError("unexpected effective permissions response")
+                granted = {
+                    privilege for privilege, enabled in data[path].items()
+                    if enabled in (1, "1", True)
+                }
+                missing = sorted(required - granted)
+                self._serve(
+                    label, "fail" if missing else "ok",
+                    f"{path}: missing {', '.join(missing)}" if missing
+                    else f"{path}: required privileges granted",
+                )
+            except (httpx.HTTPError, RuntimeError) as exc:
+                self._serve(label, "fail", f"{path}: {exc}")
 
     async def run(self) -> int:
         if self.settings.lab_provider != "proxmox":
@@ -196,12 +244,39 @@ class ProxmoxCheck:
         except (httpx.HTTPError, RuntimeError) as exc:
             self._serve("template", "fail", str(exc))
 
-        # Next free VMID (informational)
+        # A clone requires an available target VMID and effective permissions
+        # on that target, separately from the source template.
+        next_vmid = None
         try:
             next_id = self._data(await self._get("/cluster/nextid"))
-            self._serve("nextid", "ok", f"next free VMID is {next_id}")
-        except (httpx.HTTPError, RuntimeError):
-            pass  # informational
+            if not re.fullmatch(r"[1-9][0-9]{2,8}", str(next_id)):
+                raise RuntimeError("Proxmox did not return a valid free VMID")
+            next_vmid = str(next_id)
+            self._serve("nextid", "ok", f"next free VMID is {next_vmid}")
+        except (httpx.HTTPError, RuntimeError) as exc:
+            self._serve("nextid", "fail", str(exc))
+
+        # Proxmox checks SDN.Use for both the template's inherited NICs and
+        # the replacement bridge configured after cloning. Plain vmbr bridges
+        # belong to the implicit localnetwork zone.
+        bridges = {self.bridge}
+        try:
+            if not re.fullmatch(r"[1-9][0-9]{2,8}", self.template_vmid):
+                raise RuntimeError("LAB_IMAGE must be a numeric Proxmox template VMID")
+            config = self._data(await self._get(
+                f"/nodes/{self.node}/qemu/{self.template_vmid}/config"
+            ))
+            if not isinstance(config, dict):
+                raise RuntimeError("invalid source template configuration")
+            for key, value in config.items():
+                if re.fullmatch(r"net\d+", key) and isinstance(value, str):
+                    matched = re.search(r"(?:^|,)bridge=([A-Za-z0-9_.:-]+)(?:,|$)", value)
+                    if matched:
+                        bridges.add(matched.group(1))
+        except (httpx.HTTPError, RuntimeError) as exc:
+            self._serve("template-net", "fail", str(exc))
+
+        await self._check_permissions(next_vmid, bridges)
 
         return self._print_and_exit()
 

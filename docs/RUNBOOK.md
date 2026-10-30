@@ -45,7 +45,7 @@ LAB_IMAGE=9000
 
 When using Proxmox:
 
-1. **Create API Token**: In Proxmox VE GUI, navigate to `Datacenter > Permissions > API Tokens`. Add token `cyberlab` for user with `PVEVMAdmin` role. Use the token's **UUID** as `PROXMOX_TOKEN_UUID`.
+1. **Create API Token**: In Proxmox VE GUI, navigate to `Datacenter > Permissions > API Tokens`. Add token `cyberlab` and store its secret in `PROXMOX_TOKEN_UUID`. With privilege separation enabled, grant the token effective rights (within its underlying user's rights): `VM.Clone` on the source `/vms/<template-vmid>`; `VM.Allocate`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Network`, `VM.PowerMgmt`, and `VM.GuestAgent.Unrestricted` on `/vms` for new lab VMs; `Datastore.AllocateSpace` on `/storage/<storage-id>`; and `SDN.Use` on `/sdn/zones/localnetwork/<bridge>` for the target bridge and any NIC bridge inherited from the template (or on `/sdn/zones/localnetwork` with propagation for all local bridges). The guest-agent unrestricted permission enables command execution inside each lab and should be scoped to CyberLab guests.
 2. **Create storage** (if none exists): `Datacenter > Storage > Add > Directory` — e.g. storage ID `local-lvm` (LVM-Thin) or a directory storage. The configured `PROXMOX_STORAGE` must exist, otherwise clones fail.
 3. **Create a Linux bridge**: `Datacenter > <node> > Network > Create > Linux Bridge`, e.g. `vmbr1` on the interface that reaches the CyberLab network. The configured `PROXMOX_BRIDGE` must exist on the node.
 4. **Prepare a base template** (`qemu-guest-agent` installed, cloud-init enabled):
@@ -64,7 +64,7 @@ When using Proxmox:
 
 Two helper scripts ship in `apps/api/scripts/`:
 
-- **`proxmox_check.py`** — run from anywhere the API `.env` is available to see exactly which PVE prerequisite is missing (endpoint/auth, node, storage, bridge, template VMID). Exits non-zero until everything passes:
+- **`proxmox_check.py`** — run from the repository root, where the API `.env` is available, to check endpoint/auth, node, storage, bridge, template VMID, free VMID, and the token's effective clone/configuration/guest-agent/storage privileges. Exits non-zero until everything passes:
   ```bash
   cd "$REPO_ROOT"           # so it reads the root .env
   apps/api/.venv/bin/python apps/api/scripts/proxmox_check.py
