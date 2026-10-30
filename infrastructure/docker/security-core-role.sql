@@ -179,3 +179,12 @@ GRANT UPDATE (status) ON public.competitions TO cyberlab_security_writer;
 -- lock, update only the lease/timestamp, and insert the required audit atomically.
 GRANT SELECT (created_at) ON public.lab_instances TO cyberlab_security_writer;
 GRANT UPDATE (expires_at, updated_at) ON public.lab_instances TO cyberlab_security_writer;
+-- Worker-only claim: lock the pending job and queued lab, commit both state
+-- changes with an audit record before Python calls an external lab provider.
+-- Do not grant config or provider connection details to the Rust writer.
+GRANT SELECT (id, lab_instance_id, user_id, challenge_id, status)
+  ON public.provisioning_jobs TO cyberlab_security_writer;
+GRANT UPDATE (status, started_at, completed_at, error_message, updated_at)
+  ON public.provisioning_jobs TO cyberlab_security_writer;
+GRANT SELECT (challenge_id) ON public.lab_instances TO cyberlab_security_writer;
+GRANT UPDATE (status, updated_at) ON public.lab_instances TO cyberlab_security_writer;

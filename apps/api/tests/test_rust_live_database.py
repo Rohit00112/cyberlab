@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import httpx
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -38,6 +39,7 @@ from app.models import (  # noqa: F401 (registers tables)
     CompetitionChallenge,
     CompetitionParticipant,
     LabInstance,
+    ProvisioningJob,
     Skill,
     Submission,
     Team,
@@ -613,6 +615,221 @@ async def test_live_catalog_and_leaderboard_api_match_python(
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
+    live_rust_database, monkeypatch
+):
+    """Native Rust claims a disposable job; provider I/O stays in mocked Python."""
+    from app.core import lab_transitions
+    from app.tasks import provisioning
+
+    ctx = live_rust_database
+    owner_id, other_id, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning, "get_settings", lambda: settings)
+    monkeypatch.setattr(lab_transitions, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning, "SessionLocal", ctx.factory)
+
+    async with ctx.factory() as db:
+        racing_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+            network_name="cyberlab-rust-claim-test",
+        )
+        worker_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+            network_name="cyberlab-rust-claim-worker",
+        )
+        stopped_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+        )
+        mismatched_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        rollback_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        db.add_all([racing_lab, worker_lab, stopped_lab, mismatched_lab, rollback_lab])
+        await db.flush()
+        racing = ProvisioningJob(
+            lab_instance_id=racing_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        worker = ProvisioningJob(
+            lab_instance_id=worker_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+            config={"image": "alpine:3.20", "expiry_minutes": 30},
+        )
+        stopped = ProvisioningJob(
+            lab_instance_id=stopped_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        mismatch = ProvisioningJob(
+            lab_instance_id=mismatched_lab.id, user_id=other_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        rollback = ProvisioningJob(
+            lab_instance_id=rollback_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        db.add_all([racing, worker, stopped, mismatch, rollback])
+        await db.commit()
+        racing_id, worker_id = racing.id, worker.id
+        stopped_id, mismatch_id, rollback_id = stopped.id, mismatch.id, rollback.id
+        racing_lab_id, worker_lab_id = racing_lab.id, worker_lab.id
+        rollback_lab_id = rollback_lab.id
+
+    endpoint = f"{ctx.rust_url}/v1/labs/provisioning/claim"
+    headers = {"x-internal-token": ctx.token}
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        payload = {"job_id": str(racing_id)}
+        assert (await client.post(endpoint, json=payload)).status_code == 401
+        assert (await client.post(
+            endpoint, json={"job_id": "not-uuid"}, headers=headers,
+        )).status_code == 400
+        assert (await client.post(
+            endpoint, json={"job_id": str(uuid.uuid4())}, headers=headers,
+        )).json() == {"outcome": "unavailable"}
+
+        async def request_claim():
+            return await client.post(endpoint, json=payload, headers=headers)
+
+        concurrent = await asyncio.gather(request_claim(), request_claim())
+        assert all(result.status_code == 200 for result in concurrent)
+        assert sorted(result.json()["outcome"] for result in concurrent) == [
+            "claimed", "unavailable",
+        ]
+        for rejected in (stopped_id, mismatch_id):
+            result = await client.post(
+                endpoint, json={"job_id": str(rejected)}, headers=headers,
+            )
+            assert result.status_code == 200
+            assert result.json() == {"outcome": "unavailable"}
+
+    async with ctx.factory() as db:
+        claimed = await db.get(ProvisioningJob, racing_id)
+        claimed_lab = await db.get(LabInstance, racing_lab_id)
+        assert claimed.status == "running" and claimed.started_at is not None
+        assert claimed_lab.status == "provisioning"
+        assert (await db.get(ProvisioningJob, stopped_id)).status == "failed"
+        assert (await db.get(ProvisioningJob, mismatch_id)).status == "failed"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.reject",
+        )) == 2
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.claim",
+            AuditLog.target_id == str(racing_lab_id),
+        )) == 1
+
+    # Probe the SQL using only disposable column-scoped grants, not the DB owner.
+    probe = f"cyberlab_claim_probe_{uuid.uuid4().hex[:10]}"
+    async with ctx.factory() as db:
+        try:
+            await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+            await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+            await db.execute(text(
+                'GRANT SELECT (id, lab_instance_id, user_id, challenge_id, status) '
+                f'ON provisioning_jobs TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT UPDATE (status, started_at, completed_at, error_message, updated_at) '
+                f'ON provisioning_jobs TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT SELECT (id, user_id, challenge_id, status) '
+                f'ON lab_instances TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT UPDATE (status, updated_at) '
+                f'ON lab_instances TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT INSERT (id, event, user_id, target_id) '
+                f'ON audit_logs TO "{probe}"'
+            ))
+            await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+            row = (await db.execute(text(
+                "SELECT lab_instance_id::text, user_id::text, challenge_id::text "
+                "FROM provisioning_jobs WHERE id = :job_id AND status = 'pending' "
+                "FOR UPDATE SKIP LOCKED"
+            ), {"job_id": worker_id})).one()
+            locked_lab = (await db.execute(text(
+                "SELECT user_id::text, challenge_id::text, status "
+                "FROM lab_instances WHERE id = :lab_id FOR UPDATE SKIP LOCKED"
+            ), {"lab_id": worker_lab_id})).one()
+            assert row[1] == locked_lab[0] and row[2] == locked_lab[1]
+            assert locked_lab[2] == "queued"
+            await db.execute(text(
+                "UPDATE provisioning_jobs SET status = 'running', "
+                "started_at = now(), updated_at = now() WHERE id = :job_id"
+            ), {"job_id": worker_id})
+            await db.execute(text(
+                "UPDATE lab_instances SET status = 'provisioning', updated_at = now() "
+                "WHERE id = :lab_id"
+            ), {"lab_id": worker_lab_id})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                "VALUES (gen_random_uuid(), 'lab.provisioning.claim', :uid, :lid)"
+            ), {"uid": owner_id, "lid": str(worker_lab_id)})
+            await db.execute(text(
+                "UPDATE provisioning_jobs SET status = 'failed', completed_at = now(), "
+                "error_message = 'Lab no longer queued', updated_at = now() "
+                "WHERE id = :job_id"
+            ), {"job_id": worker_id})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                "VALUES (gen_random_uuid(), 'lab.provisioning.reject', :uid, :lid)"
+            ), {"uid": owner_id, "lid": str(worker_lab_id)})
+        finally:
+            await db.rollback()
+
+    # Full worker handoff must never call a real infrastructure provider.
+    fake_provider = SimpleNamespace(
+        ensure_network=AsyncMock(),
+        create_lab=AsyncMock(return_value=("mock-provider-ref", "192.0.2.10")),
+    )
+    monkeypatch.setattr(provisioning, "get_lab_provider", lambda _name: fake_provider)
+    assert await provisioning.execute_provisioning_job(str(worker_id)) is True
+    assert await provisioning.execute_provisioning_job(str(worker_id)) is False
+    fake_provider.create_lab.assert_awaited_once()
+    async with ctx.factory() as db:
+        finished_job = await db.get(ProvisioningJob, worker_id)
+        finished_lab = await db.get(LabInstance, worker_lab_id)
+        assert finished_job.status == "completed"
+        assert finished_lab.status == "running"
+        assert finished_lab.provider_ref == "mock-provider-ref"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.claim",
+            AuditLog.target_id == str(worker_lab_id),
+        )) == 1
+
+    async with ctx.factory() as db:
+        await db.execute(text(
+            "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_claim "
+            "CHECK (event <> 'lab.provisioning.claim') NOT VALID"
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        result = await client.post(
+            endpoint, json={"job_id": str(rollback_id)}, headers=headers,
+        )
+        assert result.status_code == 503
+    async with ctx.factory() as db:
+        assert (await db.get(ProvisioningJob, rollback_id)).status == "pending"
+        assert (await db.get(LabInstance, rollback_lab_id)).status == "queued"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.claim",
+            AuditLog.target_id == str(rollback_lab_id),
+        )) == 0
+
+    # A failed audit also blocks the worker before it can call any provider.
+    with pytest.raises(HTTPException) as exc:
+        await provisioning.execute_provisioning_job(str(rollback_id))
+    assert exc.value.status_code == 503
+    fake_provider.create_lab.assert_awaited_once()
 
 
 async def test_rust_competition_creation_is_atomic_and_api_compatible(

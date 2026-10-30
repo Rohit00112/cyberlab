@@ -126,6 +126,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      RUST_CORE_URL: http://security-core:8081
+      RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
     volumes:
       - ./apps/api:/app
       - /app/.venv
@@ -135,6 +137,9 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+      security-core:
         condition: service_healthy
 
   web:

@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, hash_flag
 from app.core.lab_transitions import transition_lab
 from app.core.states import LabState
@@ -26,20 +27,32 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
     """Core provisioning routine executed either via Celery or inline."""
     job_uuid = uuid.UUID(job_id_str)
     async with SessionLocal() as db:
-        # Claim pending jobs atomically. Broker redelivery and the maintenance
-        # redispatch sweep may deliver the same job more than once.
-        job = await db.scalar(
-            select(ProvisioningJob)
-            .where(ProvisioningJob.id == job_uuid, ProvisioningJob.status == "pending")
-            .with_for_update(skip_locked=True)
-        )
+        rust_managed = bool(get_settings().rust_core_url)
+        if rust_managed:
+            from app.core.rust_engine import claim_provisioning_job_in_rust
+
+            # Fail closed: Rust owns both the job claim and queued lab status
+            # before Python touches any provider. Duplicate delivery skips I/O.
+            if not await claim_provisioning_job_in_rust(str(job_uuid)):
+                return False
+            job = await db.get(ProvisioningJob, job_uuid)
+        else:
+            # Standalone Python fallback preserves the original job claim.
+            job = await db.scalar(
+                select(ProvisioningJob)
+                .where(ProvisioningJob.id == job_uuid, ProvisioningJob.status == "pending")
+                .with_for_update(skip_locked=True)
+            )
+            if job:
+                job.status = "running"
+                job.started_at = datetime.now(UTC)
+                await db.commit()
         if not job:
             logger.info("ProvisioningJob %s is missing, claimed or already processed", job_uuid)
             return False
-
-        job.status = "running"
-        job.started_at = datetime.now(UTC)
-        await db.commit()
+        if rust_managed and job.status != "running":
+            logger.error("Rust claim for job %s did not persist its running state", job_uuid)
+            return False
 
         lab = await db.get(LabInstance, job.lab_instance_id)
         challenge = await db.get(Challenge, job.challenge_id)
@@ -49,9 +62,17 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             await db.commit()
             return False
 
+        if rust_managed and lab.status != LabState.PROVISIONING.value:
+            # A concurrent stop/terminate after claim must prevent provider I/O.
+            logger.warning("Lab %s changed state after Rust job claim", lab.id)
+            return False
+
         try:
-            lab.status = (await transition_lab(lab.status, LabState.PROVISIONING)).value
-            await db.commit()
+            if not rust_managed:
+                # Keep the original transition guard in the Python fallback;
+                # only Rust claims have already applied queued -> provisioning.
+                lab.status = (await transition_lab(lab.status, LabState.PROVISIONING)).value
+                await db.commit()
             cfg = job.config or {}
             flag_path = cfg.get("flag_path", "/flag.txt")
             image = cfg.get("image", "alpine:3.20")

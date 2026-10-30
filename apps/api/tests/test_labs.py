@@ -552,3 +552,56 @@ async def test_rust_lab_lease_outcomes_fail_closed(monkeypatch, reply, http_stat
             str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, 30, 240,
         )
     assert exc.value.status_code == http_status
+
+
+@pytest.mark.parametrize("reply", [
+    [], {"outcome": "unknown"}, {"outcome": "claimed", "job_id": "surprise"},
+    {"outcome": 1}, None,
+])
+async def test_rust_provisioning_claim_rejects_malformed_responses(monkeypatch, reply):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=reply))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.claim_provisioning_job_in_rust(str(uuid.uuid4()))
+    assert exc.value.status_code == 503
+
+
+async def test_provisioning_worker_preserves_python_fallback(test_db, monkeypatch):
+    from app.core import lab_transitions
+    from app.tasks import provisioning
+
+    user = _student(sub=f"lab-worker-fallback-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(test_db, slug=f"_lwf_{uuid.uuid4().hex[:6]}")
+    async with test_db() as db:
+        lab = LabInstance(
+            user_id=user.id, challenge_id=challenge.id, status="queued",
+            network_name="cyberlab-worker-fallback",
+        )
+        db.add(lab)
+        await db.flush()
+        job = ProvisioningJob(
+            lab_instance_id=lab.id, user_id=user.id,
+            challenge_id=challenge.id, status="pending",
+            config={"image": "alpine:3.20", "expiry_minutes": 15},
+        )
+        db.add(job)
+        await db.commit()
+        job_id, lab_id = job.id, lab.id
+
+    settings = SimpleNamespace(rust_core_url="")
+    monkeypatch.setattr(provisioning, "get_settings", lambda: settings)
+    monkeypatch.setattr(lab_transitions, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning, "SessionLocal", test_db)
+    provider = SimpleNamespace(
+        ensure_network=AsyncMock(),
+        create_lab=AsyncMock(return_value=("fallback-ref", "192.0.2.11")),
+    )
+    monkeypatch.setattr(provisioning, "get_lab_provider", lambda _name: provider)
+
+    assert await provisioning.execute_provisioning_job(str(job_id)) is True
+    assert await provisioning.execute_provisioning_job(str(job_id)) is False
+    provider.create_lab.assert_awaited_once()
+    async with test_db() as db:
+        assert (await db.get(ProvisioningJob, job_id)).status == "completed"
+        result = await db.get(LabInstance, lab_id)
+        assert result.status == "running" and result.provider_ref == "fallback-ref"

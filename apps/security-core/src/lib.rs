@@ -13,6 +13,7 @@ pub mod competition_writes;
 pub mod creation;
 pub mod editing;
 pub mod lab_leases;
+pub mod lab_provisioning;
 pub mod leaderboard;
 pub mod publishing;
 pub mod solves;
