@@ -169,3 +169,7 @@ GRANT UPDATE (team_id) ON public.competition_participants TO cyberlab_security_w
 -- Competition leaderboard freeze and its audit must share one transaction.
 GRANT UPDATE (freeze_leaderboard, frozen_at, updated_at)
   ON public.competitions TO cyberlab_security_writer;
+-- Organizer status changes use the stored schedule in the Rust policy and
+-- require the status mutation and transition audit in one transaction.
+GRANT SELECT (start_at, end_at) ON public.competitions TO cyberlab_security_writer;
+GRANT UPDATE (status) ON public.competitions TO cyberlab_security_writer;

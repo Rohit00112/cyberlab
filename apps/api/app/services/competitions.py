@@ -183,6 +183,32 @@ async def transition(
     user: User,
     request: Request | None = None,
 ) -> CompetitionOut:
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import persist_competition_transition_in_rust
+
+        competition_id = competition.id
+        await db.rollback()
+        to_status = await persist_competition_transition_in_rust(
+            str(competition_id), action, str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+        )
+        competition = await db.get(Competition, competition_id)
+        if competition is None:
+            raise HTTPException(status_code=404, detail="Competition not found")
+        if to_status == "finished":
+            from app.services.badges import grant_eligible_badges
+
+            participant_ids = (
+                await db.scalars(
+                    select(CompetitionParticipant.user_id).where(
+                        CompetitionParticipant.competition_id == competition_id
+                    )
+                )
+            ).all()
+            for participant_id in participant_ids:
+                await grant_eligible_badges(db, participant_id, request=request)
+            await db.refresh(competition)
+        return await _to_out(db, competition, user=user)
     now = datetime.now(UTC)
     to_status, error_code = await decide_competition_transition(
         competition.status,

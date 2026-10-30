@@ -28,6 +28,9 @@ use cyberlab_security_core::competition_participants::{
 use cyberlab_security_core::competition_teams::{
     create as create_team, join as join_team, TeamRequest, TeamResponse,
 };
+use cyberlab_security_core::competition_transition_writes::{
+    persist as persist_competition_transition, ManualTransitionRequest, ManualTransitionResponse,
+};
 use cyberlab_security_core::competition_writes::{
     create as create_competition_record, edit as edit_competition_record, CompetitionCreateRequest,
     CompetitionCreateResponse, CompetitionEditRequest, CompetitionEditResponse,
@@ -497,6 +500,26 @@ async fn freeze_competition_route(
     }
 }
 
+async fn persist_competition_transition_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ManualTransitionRequest>,
+) -> Result<Json<ManualTransitionResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match persist_competition_transition(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -568,6 +591,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(join_competition_team_route),
         )
         .route("/v1/competitions/freeze", post(freeze_competition_route))
+        .route(
+            "/v1/competitions/transition/persist",
+            post(persist_competition_transition_route),
+        )
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))
         .route("/v1/challenges/publish", post(publish_challenge))

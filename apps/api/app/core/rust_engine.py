@@ -260,6 +260,61 @@ async def set_competition_frozen_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust competition response")
 
 
+async def persist_competition_transition_in_rust(
+    competition_id: str, action: str, actor_id: str,
+    roles: list[str], ip_address: str | None,
+) -> str:
+    transitions = {
+        "start_registration": ("draft", "registration"),
+        "schedule": ("registration", "scheduled"),
+        "start": ("scheduled", "live"),
+        "finish": ("live", "finished"),
+        "archive": ("finished", "archived"),
+    }
+    if action not in transitions:
+        raise HTTPException(status_code=400, detail="Unknown transition")
+    result = await _post("/v1/competitions/transition/persist", {
+        "competition_id": competition_id, "action": action,
+        "actor_id": actor_id, "roles": roles, "ip_address": ip_address,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Competition not found")
+    if outcome == "unknown_action":
+        raise HTTPException(status_code=400, detail="Unknown transition")
+    if outcome == "invalid_transition":
+        current = result.get("current_status")
+        if not isinstance(current, str) or current not in {
+            "draft", "registration", "scheduled", "live", "finished", "archived",
+        }:
+            raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot {action}: competition is '{current}', "
+                f"expected '{transitions[action][0]}'."
+            ),
+        )
+    if outcome == "too_early":
+        raise HTTPException(
+            status_code=409,
+            detail="Competition cannot start before its scheduled start time.",
+        )
+    if outcome == "missing_schedule":
+        raise HTTPException(
+            status_code=400, detail="Set start_at and end_at before scheduling.",
+        )
+    if (
+        outcome != "updated"
+        or result.get("current_status") != transitions[action][0]
+        or result.get("next_status") != transitions[action][1]
+    ):
+        raise HTTPException(status_code=503, detail="Invalid Rust competition response")
+    return transitions[action][1]
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:
