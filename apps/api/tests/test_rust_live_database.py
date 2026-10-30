@@ -724,6 +724,24 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
             AuditLog.target_id == str(racing_lab_id),
         )) == 1
 
+    start_endpoint = f"{ctx.rust_url}/v1/labs/provisioning/start"
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        start_payload = {"job_id": str(racing_id)}
+        assert (await client.post(start_endpoint, json=start_payload)).status_code == 401
+        assert (await client.post(
+            start_endpoint, json={"job_id": "invalid"}, headers=headers,
+        )).status_code == 400
+        response = await client.post(start_endpoint, json=start_payload, headers=headers)
+        assert response.status_code == 200 and response.json() == {"outcome": "started"}
+        again = await client.post(start_endpoint, json=start_payload, headers=headers)
+        assert again.json() == {"outcome": "unavailable"}
+    async with ctx.factory() as db:
+        assert (await db.get(LabInstance, racing_lab_id)).status == "starting"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.start",
+            AuditLog.target_id == str(racing_lab_id),
+        )) == 1
+
     # Probe the SQL using only disposable column-scoped grants, not the DB owner.
     probe = f"cyberlab_claim_probe_{uuid.uuid4().hex[:10]}"
     async with ctx.factory() as db:
@@ -775,6 +793,14 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
                 "VALUES (gen_random_uuid(), 'lab.provisioning.claim', :uid, :lid)"
             ), {"uid": owner_id, "lid": str(worker_lab_id)})
             await db.execute(text(
+                "UPDATE lab_instances SET status = 'starting', updated_at = now() "
+                "WHERE id = :lab_id"
+            ), {"lab_id": worker_lab_id})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                "VALUES (gen_random_uuid(), 'lab.provisioning.start', :uid, :lid)"
+            ), {"uid": owner_id, "lid": str(worker_lab_id)})
+            await db.execute(text(
                 "UPDATE provisioning_jobs SET status = 'failed', completed_at = now(), "
                 "error_message = 'Lab no longer queued', updated_at = now() "
                 "WHERE id = :job_id"
@@ -805,6 +831,63 @@ async def test_rust_provisioning_claim_worker_handoff_and_atomic_rollback(
             AuditLog.event == "lab.provisioning.claim",
             AuditLog.target_id == str(worker_lab_id),
         )) == 1
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.start",
+            AuditLog.target_id == str(worker_lab_id),
+        )) == 1
+
+    # The starting transition must also roll back if its audit cannot persist.
+    async with ctx.factory() as db:
+        start_rollback_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        db.add(start_rollback_lab)
+        await db.flush()
+        start_rollback_job = ProvisioningJob(
+            lab_instance_id=start_rollback_lab.id, user_id=owner_id,
+            challenge_id=challenge_id, status="pending",
+        )
+        db.add(start_rollback_job)
+        await db.commit()
+        start_rollback_id = start_rollback_job.id
+        start_rollback_lab_id = start_rollback_lab.id
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        initial = await client.post(
+            endpoint, json={"job_id": str(start_rollback_id)}, headers=headers,
+        )
+        assert initial.json() == {"outcome": "claimed"}
+    async with ctx.factory() as db:
+        await db.execute(text(
+            "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_start "
+            "CHECK (event <> 'lab.provisioning.start') NOT VALID"
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        failed_start = await client.post(
+            start_endpoint, json={"job_id": str(start_rollback_id)}, headers=headers,
+        )
+        assert failed_start.status_code == 503
+    async with ctx.factory() as db:
+        assert (await db.get(LabInstance, start_rollback_lab_id)).status == "provisioning"
+        assert (await db.get(ProvisioningJob, start_rollback_id)).status == "running"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning.start",
+            AuditLog.target_id == str(start_rollback_lab_id),
+        )) == 0
+
+    # A Rust start failure must not be converted into a Python status write or
+    # start the provider. The test resumes an already-claimed job deliberately.
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            rust_engine, "claim_provisioning_job_in_rust", AsyncMock(return_value=True),
+        )
+        with pytest.raises(HTTPException) as exc:
+            await provisioning.execute_provisioning_job(str(start_rollback_id))
+        assert exc.value.status_code == 503
+    fake_provider.create_lab.assert_awaited_once()
+    async with ctx.factory() as db:
+        assert (await db.get(LabInstance, start_rollback_lab_id)).status == "provisioning"
+        assert (await db.get(ProvisioningJob, start_rollback_id)).status == "running"
 
     async with ctx.factory() as db:
         await db.execute(text(

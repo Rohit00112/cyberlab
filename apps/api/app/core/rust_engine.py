@@ -374,6 +374,18 @@ async def claim_provisioning_job_in_rust(job_id: str) -> bool:
     raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
 
 
+async def start_provisioning_job_in_rust(job_id: str) -> bool:
+    """Commit provisioning -> starting with audit before provider creation."""
+    result = await _post("/v1/labs/provisioning/start", {"job_id": job_id})
+    if not isinstance(result, dict) or set(result) != {"outcome"}:
+        raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+    if result["outcome"] == "started":
+        return True
+    if result["outcome"] == "unavailable":
+        return False
+    raise HTTPException(status_code=503, detail="Invalid Rust provisioning response")
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

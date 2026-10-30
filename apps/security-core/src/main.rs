@@ -44,7 +44,8 @@ use cyberlab_security_core::lab_leases::{
     extend as extend_lab_lease, LabExtendRequest, LabExtendResponse,
 };
 use cyberlab_security_core::lab_provisioning::{
-    claim as claim_provisioning_job, ProvisioningClaimRequest, ProvisioningClaimResponse,
+    claim as claim_provisioning_job, start as start_provisioning_job, ProvisioningClaimRequest,
+    ProvisioningClaimResponse,
 };
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
@@ -586,6 +587,26 @@ async fn claim_provisioning_job_route(
     }
 }
 
+async fn start_provisioning_job_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ProvisioningClaimRequest>,
+) -> Result<Json<ProvisioningClaimResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match start_provisioning_job(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -629,6 +650,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/labs/provisioning/claim",
             post(claim_provisioning_job_route),
+        )
+        .route(
+            "/v1/labs/provisioning/start",
+            post(start_provisioning_job_route),
         )
         .route("/v1/authorization", post(authorization))
         .route("/v1/competition-transition", post(competition_transition))

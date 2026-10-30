@@ -124,6 +124,75 @@ pub async fn claim(
     })
 }
 
+/// Advance an already-claimed lab immediately before creating its provider.
+pub async fn start(
+    pool: &Pool,
+    request: &ProvisioningClaimRequest,
+) -> Result<ProvisioningClaimResponse, PublishError> {
+    validate(request)?;
+    let mut client = pool.get().await.map_err(|_| PublishError::Database)?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let row = tx
+        .query_opt(
+            "SELECT lab_instance_id::text, user_id::text, challenge_id::text \
+             FROM provisioning_jobs WHERE id = ($1::text)::uuid \
+             AND status = 'running' FOR UPDATE SKIP LOCKED",
+            &[&request.job_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let Some(row) = row else {
+        return Ok(ProvisioningClaimResponse {
+            outcome: "unavailable".into(),
+        });
+    };
+    let lab_id: String = row.get(0);
+    let owner: String = row.get(1);
+    let challenge: String = row.get(2);
+    let lab = tx
+        .query_opt(
+            "SELECT user_id::text, challenge_id::text, status \
+             FROM lab_instances WHERE id = ($1::text)::uuid FOR UPDATE SKIP LOCKED",
+            &[&lab_id],
+        )
+        .await
+        .map_err(|_| PublishError::Database)?;
+    let Some(lab) = lab else {
+        return Ok(ProvisioningClaimResponse {
+            outcome: "unavailable".into(),
+        });
+    };
+    let lab_owner: String = lab.get(0);
+    let lab_challenge: String = lab.get(1);
+    let status: String = lab.get(2);
+    if status != "provisioning" || owner != lab_owner || challenge != lab_challenge {
+        return Ok(ProvisioningClaimResponse {
+            outcome: "unavailable".into(),
+        });
+    }
+    tx.execute(
+        "UPDATE lab_instances SET status = 'starting', updated_at = now() \
+         WHERE id = ($1::text)::uuid",
+        &[&lab_id],
+    )
+    .await
+    .map_err(|_| PublishError::Database)?;
+    tx.execute(
+        "INSERT INTO audit_logs (id, event, user_id, target_id) \
+         VALUES (gen_random_uuid(), 'lab.provisioning.start', ($1::text)::uuid, $2)",
+        &[&owner, &lab_id],
+    )
+    .await
+    .map_err(|_| PublishError::Database)?;
+    tx.commit().await.map_err(|_| PublishError::Database)?;
+    Ok(ProvisioningClaimResponse {
+        outcome: "started".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -81,8 +82,19 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             # Start container via provider
             provider = get_lab_provider(lab.provider)
             await provider.ensure_network(lab.network_name)
-            lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
-            await db.commit()
+            if rust_managed:
+                from app.core.rust_engine import start_provisioning_job_in_rust
+
+                # Release the ORM read transaction before Rust locks the rows.
+                # An outdated worker cannot revive a stopped lab.
+                await db.rollback()
+                if not await start_provisioning_job_in_rust(str(job_uuid)):
+                    return False
+                await db.refresh(lab)
+                await db.refresh(job)
+            else:
+                lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
+                await db.commit()
 
             flag = generate_lab_flag()
             cmd = lab_flag_command(flag_path, flag)
@@ -110,6 +122,11 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             logger.info("Successfully provisioned lab %s (job %s)", lab.id, job.id)
             return True
 
+        except HTTPException:
+            # A Rust outage is not a provider failure. Keep its durable job
+            # state intact for operator recovery instead of writing around it.
+            await db.rollback()
+            raise
         except Exception as exc:
             logger.exception("Provisioning failed for lab %s (job %s)", lab.id, job.id)
             lab.status = LabState.FAILED.value

@@ -580,6 +580,17 @@ async def test_rust_provisioning_claim_rejects_malformed_responses(monkeypatch, 
     assert exc.value.status_code == 503
 
 
+@pytest.mark.parametrize("reply", [
+    [], {"outcome": "unknown"}, {"outcome": "started", "job_id": "unexpected"},
+    {"outcome": 7}, None,
+])
+async def test_rust_provisioning_start_rejects_malformed_responses(monkeypatch, reply):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=reply))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.start_provisioning_job_in_rust(str(uuid.uuid4()))
+    assert exc.value.status_code == 503
+
+
 async def test_provisioning_worker_preserves_python_fallback(test_db, monkeypatch):
     from app.core import lab_transitions
     from app.tasks import provisioning
