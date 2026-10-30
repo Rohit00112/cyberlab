@@ -359,3 +359,29 @@ async def test_rust_competition_freeze_outcomes_fail_closed(
             str(uuid.uuid4()), str(uuid.uuid4()), ["faculty"], None, True
         )
     assert exc.value.status_code == http_status
+
+
+@pytest.mark.parametrize(
+    ("action", "response", "http_status"),
+    [
+        ("start", {"outcome": "too_early"}, 409),
+        ("schedule", {"outcome": "missing_schedule"}, 400),
+        ("finish", {"outcome": "not_found"}, 404),
+        ("start", {"outcome": "invalid_transition", "current_status": "draft"}, 409),
+        ("start", {"outcome": "invalid_transition", "current_status": []}, 503),
+        ("finish", {
+            "outcome": "updated", "current_status": "live", "next_status": "admin",
+        }, 503),
+        ("archive", {"outcome": "unexpected"}, 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_persistent_transition_outcomes_are_validated(
+    monkeypatch, action, response, http_status
+):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=response))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.persist_competition_transition_in_rust(
+            str(uuid.uuid4()), action, str(uuid.uuid4()), ["faculty"], None
+        )
+    assert exc.value.status_code == http_status

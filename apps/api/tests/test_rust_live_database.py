@@ -15,6 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import asyncpg
 import httpx
@@ -1926,6 +1927,253 @@ async def test_rust_competition_freeze_is_atomic_and_api_compatible(
             unchanged = await db.get(Competition, rollback_id)
             assert unchanged.freeze_leaderboard is True
             assert unchanged.frozen_at is not None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_manual_competition_transitions_are_atomic_and_api_compatible(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, other_id, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+    badge_hook = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.badges.grant_eligible_badges", badge_hook,
+    )
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=organizer_id, keycloak_sub="transition-faculty", roles=["faculty"],
+    )
+    now = datetime.now(UTC)
+    async with ctx.factory() as db:
+        draft = Competition(
+            slug="manual-draft", title="Open registration",
+            status="draft", created_by=organizer_id,
+        )
+        scheduled = Competition(
+            slug="manual-scheduled", title="Start competition",
+            status="scheduled", start_at=now - timedelta(minutes=2),
+            end_at=now + timedelta(hours=1), created_by=organizer_id,
+        )
+        future = Competition(
+            slug="manual-future", title="Too early",
+            status="scheduled", start_at=now + timedelta(hours=1),
+            end_at=now + timedelta(hours=2), created_by=organizer_id,
+        )
+        live = Competition(
+            slug="manual-live", title="Finish competition",
+            status="live", created_by=organizer_id,
+        )
+        archived = Competition(
+            slug="manual-archivable", title="Archive competition",
+            status="finished", created_by=organizer_id,
+        )
+        incomplete = Competition(
+            slug="manual-incomplete", title="Schedule missing",
+            status="registration", created_by=organizer_id,
+        )
+        ready = Competition(
+            slug="manual-ready", title="Schedule complete",
+            status="registration", start_at=now + timedelta(hours=1),
+            end_at=now + timedelta(hours=2), created_by=organizer_id,
+        )
+        rollback = Competition(
+            slug="manual-rollback", title="Audit failure",
+            status="draft", created_by=organizer_id,
+        )
+        racing = Competition(
+            slug="manual-racing", title="Concurrent transition",
+            status="draft", created_by=organizer_id,
+        )
+        db.add_all([
+            draft, scheduled, future, live, archived, incomplete, ready, rollback, racing,
+        ])
+        await db.flush()
+        db.add_all([
+            CompetitionParticipant(competition_id=live.id, user_id=organizer_id),
+            CompetitionParticipant(competition_id=live.id, user_id=other_id),
+        ])
+        await db.commit()
+        draft_id, scheduled_id, future_id, live_id = (
+            draft.id, scheduled.id, future.id, live.id,
+        )
+        archive_id, incomplete_id, rollback_id, racing_id = (
+            archived.id, incomplete.id, rollback.id, racing.id,
+        )
+        ready_id = ready.id
+    internal = f"{ctx.rust_url}/v1/competitions/transition/persist"
+    request_data = {
+        "competition_id": str(draft_id), "action": "start_registration",
+        "actor_id": str(organizer_id), "roles": ["faculty"],
+        "ip_address": "127.0.0.1",
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            async def change(competition_id, action):
+                return await client.post(
+                    f"/api/v1/competitions/{competition_id}/transition",
+                    json={"action": action},
+                )
+
+            opened = await change(draft_id, "start_registration")
+            assert opened.status_code == 200, opened.text
+            assert opened.json()["status"] == "registration"
+            missing = await change(incomplete_id, "schedule")
+            assert missing.status_code == 400
+            assert missing.json()["detail"] == (
+                "Set start_at and end_at before scheduling."
+            )
+            scheduled_response = await change(ready_id, "schedule")
+            assert scheduled_response.status_code == 200, scheduled_response.text
+            assert scheduled_response.json()["status"] == "scheduled"
+            too_early = await change(future_id, "start")
+            assert too_early.status_code == 409
+            assert too_early.json()["detail"] == (
+                "Competition cannot start before its scheduled start time."
+            )
+            started = await change(scheduled_id, "start")
+            assert started.status_code == 200, started.text
+            assert started.json()["status"] == "live"
+            finished = await change(live_id, "finish")
+            assert finished.status_code == 200, finished.text
+            assert finished.json()["status"] == "finished"
+            assert badge_hook.await_count == 2
+            archived_response = await change(archive_id, "archive")
+            assert archived_response.status_code == 200, archived_response.text
+            assert archived_response.json()["status"] == "archived"
+            incorrect = await change(draft_id, "start")
+            assert incorrect.status_code == 409
+            assert incorrect.json()["detail"] == (
+                "Cannot start: competition is 'registration', expected 'scheduled'."
+            )
+
+            # Competing requests must serialize on the competition row; only
+            # one can perform the draft -> registration transition and audit.
+            first, second = await asyncio.gather(
+                change(racing_id, "start_registration"),
+                change(racing_id, "start_registration"),
+            )
+            assert sorted([first.status_code, second.status_code]) == [200, 409]
+        async with ctx.factory() as db:
+            transition_audits = (await db.scalars(select(AuditLog).where(
+                AuditLog.event == "competition.transition",
+            ))).all()
+            assert len(transition_audits) == 6
+            assert {
+                audit.details["action"] for audit in transition_audits
+            } == {"start_registration", "schedule", "start", "finish", "archive"}
+            finish_audit = next(
+                audit for audit in transition_audits
+                if audit.target_id == "manual-live"
+            )
+            assert finish_audit.details == {
+                "action": "finish", "from": "live", "to": "finished",
+            }
+
+        async with httpx.AsyncClient(timeout=2) as client:
+            assert (await client.post(
+                internal, json=request_data,
+            )).status_code == 401
+            assert (await client.post(
+                internal, json={**request_data, "roles": ["student"]},
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 403
+            assert (await client.post(
+                internal, json={**request_data, "actor_id": "invalid"},
+                headers={"x-internal-token": ctx.token},
+            )).status_code == 400
+            bypass = await client.post(
+                internal, json={**request_data, "action": "auto"},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert bypass.status_code == 200
+            assert bypass.json()["outcome"] == "unknown_action"
+            absent = await client.post(
+                internal,
+                json={**request_data, "competition_id": str(uuid.uuid4())},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert absent.status_code == 200
+            assert absent.json()["outcome"] == "not_found"
+
+        # Exercise the selected SQL operations under a temporary minimal role.
+        probe = f"cyberlab_transition_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                await db.execute(text(
+                    'GRANT SELECT (id, slug, status, start_at, end_at) '
+                    f'ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (status, updated_at) '
+                    f'ON competitions TO "{probe}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address, details) '
+                    f'ON audit_logs TO "{probe}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                row = (await db.execute(text(
+                    "SELECT slug, status, "
+                    "floor(extract(epoch FROM start_at) * 1000)::bigint, "
+                    "floor(extract(epoch FROM end_at) * 1000)::bigint, "
+                    "floor(extract(epoch FROM now()) * 1000)::bigint "
+                    "FROM competitions WHERE id=:cid FOR UPDATE"
+                ), {"cid": rollback_id})).one()
+                assert row[0] == "manual-rollback" and row[1] == "draft"
+                await db.execute(text(
+                    "UPDATE competitions SET status='registration', updated_at=now() "
+                    "WHERE id=:cid"
+                ), {"cid": rollback_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs "
+                    "(id, event, user_id, target_id, details) "
+                    "VALUES (gen_random_uuid(), 'competition.transition', "
+                    ":uid, 'manual-rollback', CAST(:details AS jsonb))"
+                ), {
+                    "uid": organizer_id,
+                    "details": (
+                        '{"action":"start_registration","from":"draft",'
+                        '"to":"registration"}'
+                    ),
+                })
+            finally:
+                await db.rollback()
+
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_manual_transition "
+                "CHECK (event <> 'competition.transition') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            failed = await client.post(
+                f"/api/v1/competitions/{rollback_id}/transition",
+                json={"action": "start_registration"},
+            )
+            assert failed.status_code == 503
+        async with ctx.factory() as db:
+            assert (await db.get(Competition, rollback_id)).status == "draft"
+            assert await db.scalar(select(func.count()).select_from(AuditLog)
+                .where(AuditLog.target_id == "manual-rollback")) == 0
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
