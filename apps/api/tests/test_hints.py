@@ -5,12 +5,15 @@ penalty-aware scoring (earned = base − hint_penalty × revealed), and the
 hint.reveal audit trail.
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import CurrentUser, get_current_user, get_db
@@ -19,6 +22,7 @@ from app.core.flags import hash_flag
 from app.db.base import Base
 from app.main import app
 from app.models import Challenge, HintReveal, User  # noqa: F401  (registers tables)
+from app.services import hints as hint_service
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -180,6 +184,66 @@ async def test_reveal_requires_flag_permission_and_role(test_db):
         assert res.status_code == 403
     finally:
         await _delete_by_slug(test_db, faculty.slug)
+
+
+@pytest.mark.asyncio
+async def test_python_reveal_concurrent_requests_unlock_once(test_db, monkeypatch):
+    monkeypatch.setattr(
+        hint_service, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    user = _student()
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(
+        test_db, slug=f"hint_race_{uuid.uuid4().hex[:6]}", points=100
+    )
+    try:
+        async def reveal():
+            async with test_db() as db:
+                return await hint_service.reveal_hint(
+                    db, user=user, challenge=challenge, hint_index=0
+                )
+
+        assert await asyncio.gather(reveal(), reveal()) == [1, 1]
+        async with test_db() as db:
+            count = await db.scalar(select(func.count()).select_from(HintReveal).where(
+                HintReveal.user_id == user.id,
+                HintReveal.challenge_id == challenge.id,
+            ))
+            assert count == 1
+    finally:
+        await _delete_by_slug(test_db, challenge.slug)
+
+
+@pytest.mark.asyncio
+async def test_python_reveal_rolls_back_if_audit_fails(test_db, monkeypatch):
+    monkeypatch.setattr(
+        hint_service, "get_settings", lambda: SimpleNamespace(rust_core_url="")
+    )
+    user = _student()
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(
+        test_db, slug=f"hint_rollback_{uuid.uuid4().hex[:6]}", points=100
+    )
+    try:
+        async with test_db() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_hint_audit "
+                "CHECK (event <> 'hint.reveal') NOT VALID"
+            ))
+            await db.commit()
+        async with test_db() as db:
+            with pytest.raises(IntegrityError):
+                await hint_service.reveal_hint(
+                    db, user=user, challenge=challenge, hint_index=0
+                )
+        async with test_db() as db:
+            count = await db.scalar(select(func.count()).select_from(HintReveal).where(
+                HintReveal.user_id == user.id,
+                HintReveal.challenge_id == challenge.id,
+            ))
+            assert count == 0
+    finally:
+        await _delete_by_slug(test_db, challenge.slug)
 
 
 async def _make_client_with_user(factory: SessionFactory, user: CurrentUser | None = None):

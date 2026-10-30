@@ -55,6 +55,7 @@ When using Proxmox:
 5. **Point the API at the template**: all `docker`-type challenges fall back to the configured default image, so set
    `LAB_IMAGE=<template-vmid>` in `.env` (a numeric PVE template VMID, **not** a Docker image name like `alpine:3.20`). Per-challenge overrides are still possible via each challenge's `lab_config` JSON, e.g. `{"image": "9000", "expiry_minutes": 60}`.
 6. **IP Discovery**: The provider polls the Proxmox QEMU Guest Agent for assigned IPv4 addresses, so the template must have `qemu-guest-agent` running and the VM attached to the configured bridge.
+7. **Guest-agent readiness**: Enabling the QEMU Guest Agent option in Proxmox only creates the virtual interface; the package and daemon must also work inside the guest OS. On Debian/Ubuntu, install `qemu-guest-agent`, run `sudo systemctl enable --now qemu-guest-agent`, reboot if necessary, and confirm `qm guest cmd <vmid> ping` from the Proxmox host. A stopped template cannot be booted as a regular guest; clone it to a separate VM, repair/test that VM, then shut it down and convert the corrected clone into a new template. Update `LAB_IMAGE` and template-clone ACLs to the new ID.
 
 > **Plain-HTTP gotcha**: Proxmox answers on `https://` and returns empty-body `301/308` redirects for `http://` requests. Always set `PROXMOX_ENDPOINT=https://<host>:8006` (with `PROXMOX_VERIFY_SSL=false` for self-signed certs). A missing/mismatched bridge name or storage makes launches surface as `503 No such network/storage` errors.
 >
@@ -69,6 +70,7 @@ Two helper scripts ship in `apps/api/scripts/`:
   cd "$REPO_ROOT"           # so it reads the root .env
   apps/api/.venv/bin/python apps/api/scripts/proxmox_check.py
   ```
+- **`proxmox_smoke.py`** — opt-in live test: run from the repository root with `LAB_PROVIDER=proxmox PYTHONPATH=apps/api uv run --project apps/api python -m scripts.proxmox_smoke --run`. It clones one uniquely named disposable VM, waits for startup and guest-agent flag installation, verifies the flag inside the guest, then deletes the VM only after confirming the exact clone identity. Without `--run`, it only checks readiness. If cleanup fails, inspect the printed VMID/name and resolve it manually.
 - **`proxmox_template.sh`** — run **on the PVE host as root** to build a cloud-init base template. It bakes `qemu-guest-agent` into a Debian cloud image **offline** with `virt-customize` (`apt install -y libguestfs-tools` first), imports it, attaches a cloud-init drive, and converts it to a template — no guest boot required:
   ```bash
   apt-get update && apt-get install -y libguestfs-tools

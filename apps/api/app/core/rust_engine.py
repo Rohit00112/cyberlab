@@ -76,6 +76,39 @@ async def record_incorrect_attempt(
         raise HTTPException(status_code=503, detail="Invalid Rust security core response")
 
 
+async def reveal_hint_in_rust(
+    challenge_id: str, user_id: str, roles: list[str],
+    ip_address: str | None, hint_index: int,
+) -> int:
+    result = await _post("/v1/hints/reveal", {
+        "challenge_id": challenge_id, "actor_id": user_id,
+        "roles": roles, "ip_address": ip_address, "hint_index": hint_index,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust hint response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if outcome == "negative_index":
+        raise HTTPException(status_code=400, detail="Invalid hint index")
+    if outcome == "invalid_index":
+        total = result.get("total_hints")
+        if type(total) is not int or total < 0:
+            raise HTTPException(status_code=503, detail="Invalid Rust hint response")
+        raise HTTPException(status_code=400, detail=f"Only {total} hints available")
+    if outcome == "out_of_order":
+        next_index = result.get("next_index")
+        if type(next_index) is not int or next_index < 0:
+            raise HTTPException(status_code=503, detail="Invalid Rust hint response")
+        raise HTTPException(
+            status_code=409, detail=f"Reveal hints in order — hint {next_index} next"
+        )
+    count = result.get("revealed_count")
+    if outcome not in {"revealed", "already_revealed"} or type(count) is not int or count < 0:
+        raise HTTPException(status_code=503, detail="Invalid Rust hint response")
+    return count
+
+
 async def record_correct_solve(
     challenge_id: str, user_id: str, roles: list[str], ip_address: str | None,
     candidate: str, lab_id: str | None,

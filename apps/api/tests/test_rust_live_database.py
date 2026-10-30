@@ -46,7 +46,8 @@ from app.models import (  # noqa: F401 (registers tables)
     TeamMember,
     User,
 )
-from app.services import challenges, competitions, submissions
+from app.models.hint_reveals import HintReveal
+from app.services import challenges, competitions, hints, submissions
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -612,6 +613,161 @@ async def test_live_catalog_and_leaderboard_api_match_python(
                 select(func.count()).select_from(Challenge)
                 .where(Challenge.slug == "creation-must-rollback")
             ) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_hint_reveals_are_ordered_idempotent_and_audited_atomically(
+    live_rust_database, monkeypatch,
+):
+    ctx = live_rust_database
+    owner_id, other_id, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token)
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(hints, "get_settings", lambda: settings)
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=owner_id, keycloak_sub="rust-hints", roles=["student"],
+    )
+    async with ctx.factory() as db:
+        challenge = Challenge(
+            slug=f"hint-rust-{uuid.uuid4().hex}", title="Rust hint test",
+            description="Progressive reveal", category="Linux", difficulty="beginner",
+            status="published", hints=["one", "two", "three"],
+        )
+        db.add(challenge)
+        await db.commit()
+        challenge_id, slug = challenge.id, challenge.slug
+
+    payload = {
+        "challenge_id": str(challenge_id), "actor_id": str(owner_id),
+        "roles": ["student"], "ip_address": "127.0.0.1", "hint_index": 0,
+    }
+    url = f"{ctx.rust_url}/v1/hints/reveal"
+    public = f"/api/v1/challenges/{challenge_id}/hints"
+    try:
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as core:
+            assert (await core.post(url, json=payload)).status_code == 401
+            forbidden = await core.post(
+                url, json={**payload, "roles": ["faculty"]},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert forbidden.status_code == 403
+            # Two simultaneous requests for index 0 commit exactly one reveal.
+            first, second = await asyncio.gather(*(
+                core.post(url, json=payload, headers={"x-internal-token": ctx.token})
+                for _ in range(2)
+            ))
+            assert [first.status_code, second.status_code] == [200, 200]
+            assert {first.json()["outcome"], second.json()["outcome"]} == {
+                "revealed", "already_revealed",
+            }
+            assert first.json()["revealed_count"] == second.json()["revealed_count"] == 1
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            too_soon = await client.post(f"{public}/2/reveal")
+            assert too_soon.status_code == 409
+            assert "hint 1 next" in too_soon.json()["detail"]
+            invalid = await client.post(f"{public}/8/reveal")
+            assert invalid.status_code == 400
+            assert invalid.json()["detail"] == "Only 3 hints available"
+            revealed = await client.post(f"{public}/1/reveal")
+            repeated = await client.post(f"{public}/1/reveal")
+            assert revealed.status_code == repeated.status_code == 201
+            assert revealed.json()["hints_revealed"] == 2
+            assert repeated.json()["hints_revealed"] == 2
+
+            async with ctx.factory() as db:
+                assert await db.scalar(select(func.count()).select_from(HintReveal).where(
+                    HintReveal.challenge_id == challenge_id,
+                )) == 2
+                assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                    AuditLog.event == "hint.reveal", AuditLog.target_id == slug,
+                )) == 2
+
+            # Check the actual SQL under minimal column-scoped writer grants.
+            # This role and its inserted rows are rolled back after the probe.
+            probe = f"cyberlab_hint_probe_{uuid.uuid4().hex[:10]}"
+            async with ctx.factory() as db:
+                try:
+                    await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+                    await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+                    await db.execute(text(
+                        f'GRANT SELECT (id, is_active) ON users TO "{probe}"'
+                    ))
+                    await db.execute(text(
+                        f'GRANT SELECT (id, slug, status, hints) ON challenges TO "{probe}"'
+                    ))
+                    await db.execute(text(
+                        f'GRANT UPDATE (status) ON challenges TO "{probe}"'
+                    ))
+                    await db.execute(text(
+                        'GRANT SELECT (user_id, challenge_id, hint_index) '
+                        f'ON hint_reveals TO "{probe}"'
+                    ))
+                    await db.execute(text(
+                        'GRANT INSERT (id, user_id, challenge_id, hint_index) '
+                        f'ON hint_reveals TO "{probe}"'
+                    ))
+                    await db.execute(text(
+                        'GRANT INSERT (id, event, user_id, target_id, ip_address, details) '
+                        f'ON audit_logs TO "{probe}"'
+                    ))
+                    assert await db.scalar(text(
+                        'SELECT has_column_privilege(:probe, :table, :column, :privilege)'
+                    ), {"probe": probe, "table": "users", "column": "is_active",
+                        "privilege": "UPDATE"}) is False
+                    await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+                    await db.execute(text(
+                        'SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'
+                    ), {"key": f"{other_id}:{challenge_id}"})
+                    assert await db.scalar(text(
+                        'SELECT is_active FROM users WHERE id=:uid'
+                    ), {"uid": other_id}) is True
+                    assert (await db.execute(text(
+                        'SELECT slug, status, CASE WHEN json_typeof(hints::json) '
+                        "= 'array' THEN json_array_length(hints::json) ELSE 0 END "
+                        'FROM challenges WHERE id=:cid FOR SHARE'
+                    ), {"cid": challenge_id})).one() == (slug, "published", 3)
+                    assert await db.scalar(text(
+                        'SELECT count(*) FROM hint_reveals WHERE user_id=:uid '
+                        'AND challenge_id=:cid'
+                    ), {"uid": other_id, "cid": challenge_id}) == 0
+                    await db.execute(text(
+                        'INSERT INTO hint_reveals (id, user_id, challenge_id, hint_index) '
+                        'VALUES (gen_random_uuid(), :uid, :cid, 0)'
+                    ), {"uid": other_id, "cid": challenge_id})
+                    await db.execute(text(
+                        'INSERT INTO audit_logs (id, event, user_id, target_id, '
+                        'ip_address, details) VALUES (gen_random_uuid(), '
+                        "'hint.reveal', :uid, :slug, NULL, "
+                        "json_build_object('hint_index', 0))"
+                    ), {"uid": other_id, "slug": slug})
+                finally:
+                    await db.rollback()
+
+            # A mandatory audit failure must roll back the corresponding reveal.
+            async with ctx.factory() as db:
+                await db.execute(text(
+                    "ALTER TABLE audit_logs ADD CONSTRAINT block_hint_audit "
+                    "CHECK (event <> 'hint.reveal') NOT VALID"
+                ))
+                await db.commit()
+            blocked = await client.post(f"{public}/2/reveal")
+            assert blocked.status_code == 503
+            async with ctx.factory() as db:
+                assert await db.scalar(select(func.count()).select_from(HintReveal).where(
+                    HintReveal.challenge_id == challenge_id,
+                )) == 2
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)

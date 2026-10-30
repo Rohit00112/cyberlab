@@ -40,6 +40,7 @@ use cyberlab_security_core::competition_writes::{
 };
 use cyberlab_security_core::creation::{create, CreateRequest, CreateResponse};
 use cyberlab_security_core::editing::{edit, EditRequest};
+use cyberlab_security_core::hints::{reveal as reveal_hint, HintRevealRequest, HintRevealResponse};
 use cyberlab_security_core::lab_leases::{
     extend as extend_lab_lease, LabExtendRequest, LabExtendResponse,
 };
@@ -648,6 +649,26 @@ async fn fail_provisioning_job_route(
     }
 }
 
+async fn reveal_hint_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<HintRevealRequest>,
+) -> Result<Json<HintRevealResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match reveal_hint(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -686,6 +707,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ready", get(ready))
         .route("/v1/verify", post(verify))
         .route("/v1/score", post(calculate))
+        .route("/v1/hints/reveal", post(reveal_hint_route))
         .route("/v1/lab-transition", post(lab_transition))
         .route("/v1/labs/extend", post(extend_lab_lease_route))
         .route(

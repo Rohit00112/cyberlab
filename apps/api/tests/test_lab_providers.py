@@ -480,6 +480,37 @@ class TestProxmoxRequest:
             await provider._install_guest_flag("135", command)
 
     @pytest.mark.asyncio
+    async def test_guest_flag_waits_for_agent_to_boot(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.core.flags import guest_flag_command
+        from app.infrastructure import proxmox
+
+        provider = proxmox.ProxmoxLabProvider()
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path))
+            if path.endswith("/agent/ping"):
+                if sum(p.endswith("/agent/ping") for _, p in calls) == 1:
+                    raise proxmox.ProxmoxError("QEMU guest agent is not running")
+                return {}
+            if path.endswith("/agent/exec"):
+                return {"pid": 75}
+            if path.endswith("/agent/exec-status"):
+                return {"exited": True, "exitcode": 0}
+            raise AssertionError(path)
+
+        monkeypatch.setattr(provider, "_request", request)
+        monkeypatch.setattr(proxmox.asyncio, "sleep", AsyncMock())
+        await provider._install_guest_flag(
+            "135", guest_flag_command("/tmp/flag", "IIC{sample}")
+        )
+        assert [path.rsplit("/", 1)[-1] for _, path in calls] == [
+            "ping", "ping", "exec", "exec-status",
+        ]
+
+    @pytest.mark.asyncio
     async def test_flag_initialization_is_required_before_cloning_a_vm(self, monkeypatch):
         from unittest.mock import AsyncMock
 

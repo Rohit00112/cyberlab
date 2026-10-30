@@ -58,6 +58,37 @@ async def test_score_rejects_bad_response():
         assert error.value.status_code == 503
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload, expected", [
+    ({"outcome": "revealed", "revealed_count": 1}, 1),
+    ({"outcome": "already_revealed", "revealed_count": 2}, 2),
+])
+async def test_hint_reveal_adapter_accepts_valid_outcomes(payload, expected):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value=payload)):
+        result = await rust_engine.reveal_hint_in_rust(
+            "challenge", "user", ["student"], None, 0
+        )
+        assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload, status_code", [
+    ({"outcome": "not_found"}, 404),
+    ({"outcome": "negative_index"}, 400),
+    ({"outcome": "invalid_index", "total_hints": 2}, 400),
+    ({"outcome": "out_of_order", "next_index": 1}, 409),
+    ({"outcome": "invalid_index", "total_hints": True}, 503),
+    ({"outcome": "revealed", "revealed_count": True}, 503),
+    ({"outcome": "revealed", "revealed_count": -1}, 503),
+    ({"outcome": "unexpected", "revealed_count": 1}, 503),
+])
+async def test_hint_reveal_adapter_maps_errors_and_rejects_bad_responses(payload, status_code):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value=payload)):
+        with pytest.raises(HTTPException) as error:
+            await rust_engine.reveal_hint_in_rust("challenge", "user", ["student"], None, 0)
+        assert error.value.status_code == status_code
+
+
 async def _seed_user_and_challenge(factory):
     async with factory() as db:
         user = User(

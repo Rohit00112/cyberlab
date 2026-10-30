@@ -1,4 +1,4 @@
-//! Pure, auditable security calculations. DB access and access control stay in the API.
+//! Auditable security policy and transactional persistence for the internal Rust core.
 pub mod attempts;
 pub mod authorization;
 pub mod catalog;
@@ -12,6 +12,7 @@ pub mod competition_transition_writes;
 pub mod competition_writes;
 pub mod creation;
 pub mod editing;
+pub mod hints;
 pub mod lab_leases;
 pub mod lab_provisioning;
 pub mod leaderboard;

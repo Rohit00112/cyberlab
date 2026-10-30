@@ -115,6 +115,12 @@ GRANT SELECT (points, hint_penalty, difficulty_score, flag_hash)
 GRANT SELECT (id, user_id, challenge_id, status, flag_hash, expires_at)
   ON public.lab_instances TO cyberlab_security_writer;
 GRANT SELECT (user_id, challenge_id) ON public.hint_reveals TO cyberlab_security_writer;
+-- Hint unlocks serialize on the user row, recheck published status and
+-- available hints, and commit the reveal with the mandatory audit.
+GRANT SELECT (hint_index) ON public.hint_reveals TO cyberlab_security_writer;
+GRANT INSERT (id, user_id, challenge_id, hint_index)
+  ON public.hint_reveals TO cyberlab_security_writer;
+GRANT SELECT (hints) ON public.challenges TO cyberlab_security_writer;
 GRANT SELECT (id, challenge_id, user_id, is_correct)
   ON public.submissions TO cyberlab_security_writer;
 GRANT UPDATE (earned_points) ON public.submissions TO cyberlab_security_writer;

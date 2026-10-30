@@ -4,9 +4,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+from app.core.rust_engine import reveal_hint_in_rust
 from app.models.challenges import Challenge
 from app.models.hint_reveals import HintReveal
 from app.models.users import User
@@ -50,6 +52,20 @@ async def reveal_hint(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid hint index"
         )
 
+    if get_settings().rust_core_url:
+        return await reveal_hint_in_rust(
+            str(challenge.id), str(user.id), user.roles,
+            request.client.host if request and request.client else None,
+            hint_index,
+        )
+
+    # Match Rust's per-user, per-challenge advisory transaction lock without
+    # requiring an UPDATE privilege on the users table.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{user.id}:{challenge.id}"},
+    )
+
     total = len(challenge.hints or [])
     existing = (
         await db.scalar(
@@ -92,13 +108,18 @@ async def reveal_hint(
             hint_index=hint_index,
         )
     )
-    await db.commit()
-    await record_audit(
-        db,
-        event="hint.reveal",
-        user_id=user.id,
-        target_id=challenge.slug,
-        details={"hint_index": hint_index},
-        request=request,
-    )
+    try:
+        # record_audit commits the session; including the pending HintReveal
+        # makes the audit mandatory for a successful unlock.
+        await record_audit(
+            db,
+            event="hint.reveal",
+            user_id=user.id,
+            target_id=challenge.slug,
+            details={"hint_index": hint_index},
+            request=request,
+        )
+    except Exception:
+        await db.rollback()
+        raise
     return existing + 1

@@ -22,6 +22,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.infrastructure import docker as docker_module
 from app.infrastructure.docker import DockerError
+from app.infrastructure.factory import get_lab_provider
 from app.main import app
 from app.models import Challenge, User  # noqa: F401  (registers tables)
 from app.models.audit_logs import AuditLog
@@ -131,7 +132,12 @@ HOST_ID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 @pytest.fixture(autouse=True)
 def fake_docker(monkeypatch):
-    """Replace the docker adapter with in-memory behaviour."""
+    """Always use the in-memory Docker adapter, regardless of the host .env.
+
+    Running this suite must never clone a real VM when LAB_PROVIDER=proxmox.
+    """
+    monkeypatch.setattr(get_settings(), "lab_provider", "docker")
+    get_lab_provider.cache_clear()
 
     async def ensure_network(name: str) -> None:
         pass
@@ -152,6 +158,15 @@ def fake_docker(monkeypatch):
     monkeypatch.setattr(docker_module, "create_and_start_container", create_and_start_container)
     monkeypatch.setattr(docker_module, "stop_container", stop_container)
     monkeypatch.setattr(docker_module, "remove_container", remove_container)
+    yield
+    get_lab_provider.cache_clear()
+
+
+def test_lab_suite_cannot_use_host_configured_provider():
+    from app.infrastructure.docker import DockerLabProvider
+
+    assert get_settings().lab_provider == "docker"
+    assert isinstance(get_lab_provider(), DockerLabProvider)
 
 
 async def test_launch_requires_lab_environment(test_db):
