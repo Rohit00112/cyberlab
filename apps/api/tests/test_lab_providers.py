@@ -263,6 +263,127 @@ def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
 class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
 
+    @pytest.mark.asyncio
+    async def test_proxmox_waits_for_task_result_and_rejects_failure(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        upid = "UPID:pve:00000001:00000002:00000003:qmclone:135:root@pam:"
+        request = AsyncMock(side_effect=[
+            {"status": "running"},
+            {"status": "stopped", "exitstatus": "OK"},
+        ])
+        monkeypatch.setattr(provider, "_request", request)
+        await provider._wait_for_task(upid)
+        assert request.await_count == 2
+        assert "%3A" in request.await_args.args[1]
+
+        monkeypatch.setattr(provider, "_request", AsyncMock(return_value={
+            "status": "stopped", "exitstatus": "VM lock error",
+        }))
+        with pytest.raises(ProxmoxError, match="VM lock error"):
+            await provider._wait_for_task(upid)
+        with pytest.raises(ProxmoxError, match="UPID"):
+            await provider._wait_for_task("../not-an-upid")
+
+        monkeypatch.setattr(provider, "_request", AsyncMock(return_value={
+            "status": "running",
+        }))
+        with pytest.raises(ProxmoxError, match="deadline"):
+            await provider._wait_for_task(upid, max_wait_seconds=0)
+
+    @pytest.mark.asyncio
+    async def test_proxmox_clone_and_start_wait_for_both_tasks(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.infrastructure.proxmox import ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        calls = []
+        clone = "UPID:pve:00000001:00000002:00000003:qmclone:135:root@pam:"
+        start = "UPID:pve:00000001:00000002:00000003:qmstart:135:root@pam:"
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path))
+            if path == "/api2/json/cluster/nextid":
+                return 135
+            if path.endswith("/900/clone"):
+                return clone
+            if "/tasks/" in path:
+                return {"status": "stopped", "exitstatus": "OK"}
+            if method == "PUT" and path.endswith("/135/config"):
+                return None
+            if method == "POST" and path.endswith("/135/status/start"):
+                return start
+            raise AssertionError(f"unexpected Proxmox call {method} {path}")
+
+        monkeypatch.setattr(provider, "_request", request)
+        monkeypatch.setattr(provider, "_wait_for_ip", AsyncMock(return_value="192.0.2.30"))
+        assert await provider.create_lab("lab", "900", "per-user-network") == (
+            "135", "192.0.2.30"
+        )
+        assert [method for method, _ in calls] == [
+            "GET", "POST", "GET", "PUT", "POST", "GET"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_proxmox_start_failure_returns_only_verified_ownership(self, monkeypatch):
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        clone = "UPID:pve:00000001:00000002:00000003:qmclone:135:root@pam:"
+
+        async def request(method, path, **kwargs):
+            if path.endswith("/nextid"):
+                return 135
+            if path.endswith("/900/clone"):
+                return clone
+            if "/tasks/" in path:
+                return {"status": "stopped", "exitstatus": "OK"}
+            if method == "PUT" and path.endswith("/config"):
+                raise ProxmoxError("configuration failed")
+            if method == "GET" and path.endswith("/config"):
+                return {"name": "verified-lab"}
+            raise AssertionError(f"unexpected Proxmox call {method} {path}")
+
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(ProxmoxError) as raised:
+            await provider.create_lab("verified-lab", "900", "per-user-network")
+        assert raised.value.provider_ref == "135"
+
+        async def wrong_owner(method, path, **kwargs):
+            result = await request(method, path, **kwargs)
+            if method == "GET" and path.endswith("/config"):
+                return {"name": "someone-elses-vm"}
+            return result
+
+        monkeypatch.setattr(provider, "_request", wrong_owner)
+        with pytest.raises(ProxmoxError) as raised:
+            await provider.create_lab("verified-lab", "900", "per-user-network")
+        assert raised.value.provider_ref is None
+
+    @pytest.mark.asyncio
+    async def test_proxmox_remove_waits_for_stop_and_delete_tasks(self, monkeypatch):
+        from app.infrastructure.proxmox import ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        upid = "UPID:pve:00000001:00000002:00000003:qmdestroy:135:root@pam:"
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path))
+            if method in ("POST", "DELETE"):
+                return upid
+            if method == "GET" and "/tasks/" in path:
+                return {"status": "stopped", "exitstatus": "OK"}
+            raise AssertionError(f"unexpected Proxmox call {method} {path}")
+
+        monkeypatch.setattr(provider, "_request", request)
+        await provider.remove_lab("135")
+        assert [method for method, _ in calls] == ["POST", "GET", "DELETE", "GET"]
+
     @pytest.mark.parametrize("overrides,expected_error", [
         ({"proxmox_endpoint": "http://pve.example:8006"}, "HTTPS"),
         ({"environment": "production", "proxmox_verify_ssl": False}, "TLS"),

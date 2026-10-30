@@ -14,6 +14,7 @@ Requires Proxmox VE credentials in settings (env vars):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -119,6 +120,37 @@ class ProxmoxLabProvider(LabProvider):
         except (ProxmoxError, httpx.HTTPError):
             return False
 
+    async def _wait_for_task(self, upid: str, *, max_wait_seconds: float = 120.0) -> None:
+        """Wait for an acknowledged Proxmox operation, not just its task ID."""
+        if (
+            not isinstance(upid, str)
+            or not re.fullmatch(r"UPID:[A-Za-z0-9:@!._-]{1,500}", upid)
+        ):
+            raise ProxmoxError("Proxmox did not return a valid task UPID")
+        task_path = (
+            f"/api2/json/nodes/{self.node}/tasks/{quote(upid, safe='')}/status"
+        )
+        try:
+            async with asyncio.timeout(max_wait_seconds):
+                while True:
+                    result = await self._request("GET", task_path)
+                    if not isinstance(result, dict):
+                        raise ProxmoxError("Proxmox task status response is invalid")
+                    state = result.get("status")
+                    if state == "stopped":
+                        if result.get("exitstatus") != "OK":
+                            raise ProxmoxError(
+                                f"Proxmox task failed: {result.get('exitstatus', 'unknown')}"
+                            )
+                        return
+                    if state != "running":
+                        raise ProxmoxError(
+                            f"Proxmox task returned unexpected status: {state!r}"
+                        )
+                    await asyncio.sleep(1)
+        except TimeoutError as exc:
+            raise ProxmoxError("Proxmox task did not finish before the deadline") from exc
+
     async def ensure_network(self, name: str) -> None:
         """Require an existing provider bridge before any VM is created.
 
@@ -166,11 +198,12 @@ class ProxmoxLabProvider(LabProvider):
             "full": 1,
             "storage": self.storage,
         }
-        await self._request(
+        clone_task = await self._request(
             "POST",
             f"/api2/json/nodes/{self.node}/qemu/{template_vmid}/clone",
             json_data=clone_params,
         )
+        await self._wait_for_task(clone_task)
 
         # Configure resources. Proxmox VMs attach to a physical/SDN bridge;
         # the per-user Docker-style network name cannot be used directly.
@@ -184,18 +217,35 @@ class ProxmoxLabProvider(LabProvider):
         if bridge:
             config_params["net0"] = f"virtio,bridge={bridge}"
 
-        if config_params:
-            await self._request(
-                "PUT",
-                f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/config",
-                json_data=config_params,
-            )
+        try:
+            if config_params:
+                await self._request(
+                    "PUT",
+                    f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/config",
+                    json_data=config_params,
+                )
 
-        # Start VM
-        await self._request(
-            "POST",
-            f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/status/start",
-        )
+            # Start VM and wait for the actual provider task to succeed.
+            start_task = await self._request(
+                "POST",
+                f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/status/start",
+            )
+            await self._wait_for_task(start_task)
+        except ProxmoxError as exc:
+            # Do not offer a VMID for destructive cleanup unless the provider
+            # confirms that it still belongs to this exact lab.
+            try:
+                config = await self._request(
+                    "GET", f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/config"
+                )
+            except ProxmoxError:
+                raise exc from None
+            if isinstance(config, dict) and config.get("name") == name:
+                raise ProxmoxError(
+                    f"Proxmox VM {new_vmid} failed configuration or startup",
+                    provider_ref=new_vmid,
+                ) from exc
+            raise
 
         # Wait for IP (best effort via QEMU guest agent)
         ip = await self._wait_for_ip(new_vmid)
@@ -234,10 +284,11 @@ class ProxmoxLabProvider(LabProvider):
 
     async def stop_lab(self, provider_ref: str) -> None:
         provider_ref = self._vmid(provider_ref)
-        await self._request(
+        task = await self._request(
             "POST",
             f"/api2/json/nodes/{self.node}/qemu/{provider_ref}/status/stop",
         )
+        await self._wait_for_task(task)
 
     async def remove_lab(self, provider_ref: str) -> None:
         provider_ref = self._vmid(provider_ref)
@@ -250,10 +301,11 @@ class ProxmoxLabProvider(LabProvider):
                 raise ProxmoxError(
                     f"Cannot remove VM {provider_ref}: stop was not confirmed"
                 ) from exc
-        await self._request(
+        task = await self._request(
             "DELETE",
             f"/api2/json/nodes/{self.node}/qemu/{provider_ref}",
         )
+        await self._wait_for_task(task)
 
     async def inspect_ip(self, provider_ref: str, network: str) -> str | None:
         return await self._wait_for_ip(provider_ref, retries=3)
