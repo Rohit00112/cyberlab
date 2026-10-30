@@ -1,4 +1,4 @@
-"""WireGuard development preview; no server-side peer provisioning is implemented."""
+"""WireGuard registration with verified peer installation and revocation."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import x25519
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
+from app.infrastructure.wireguard import configure_peer
+from app.models.audit_logs import AuditLog
 from app.models.vpn_scoring import VPNPeer
 from app.schemas.vpn import VPNConfigOut, VPNPeerOut
 from app.services.users import record_audit
@@ -23,12 +25,20 @@ from app.services.users import record_audit
 VPN_SUBNET_PREFIX = "10.200.0"
 
 
+def _controller_enabled() -> bool:
+    settings = get_settings()
+    return (
+        bool(getattr(settings, "wireguard_control_socket", ""))
+        and len(getattr(settings, "wireguard_control_token", "")) >= 32
+    )
+
+
 def _require_vpn_preview() -> None:
-    """Never represent database-only registrations as live production VPN peers."""
-    if get_settings().is_production:
+    """Production must never issue DB-only, uninstalled WireGuard credentials."""
+    if get_settings().is_production and not _controller_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="WireGuard server peer provisioning/revocation is unavailable in production.",
+            detail="WireGuard server peer controller is not configured in production.",
         )
 
 
@@ -129,16 +139,32 @@ def _peer_to_out(peer: VPNPeer) -> VPNPeerOut:
     )
 
 
+async def get_active_vpn_peer(db: AsyncSession, user: CurrentUser) -> VPNPeer | None:
+    """Read-only status lookup; it must not allocate an unrecoverable keypair."""
+    _require_vpn_preview()
+    peer = (await db.scalars(
+        select(VPNPeer).where(VPNPeer.user_id == user.id, VPNPeer.is_active.is_(True))
+    )).first()
+    if peer and peer.expires_at and peer.expires_at <= datetime.now(UTC):
+        return None
+    return peer
+
+
 async def get_or_create_vpn_peer(
     db: AsyncSession,
     user: CurrentUser,
     client_public_key: str | None = None,
 ) -> tuple[VPNPeer, str | None]:
-    """Retrieve or record a development peer (not installed on a VPN server).
+    """Retrieve/install a peer or record a development-only preview.
 
     Returns (VPNPeer, client_private_key_if_generated).
     """
     _require_vpn_preview()
+    live = _controller_enabled()
+    if live:
+        _validated_server_settings()
+        # Serialize all allocator users to prevent duplicate server addresses.
+        await db.execute(text("SELECT pg_advisory_xact_lock(417382991)"))
     validated_client_key = (
         _validated_public_key(client_public_key, client=True)
         if client_public_key is not None
@@ -167,12 +193,32 @@ async def get_or_create_vpn_peer(
             allowed_subnets=["10.100.0.0/16", f"{VPN_SUBNET_PREFIX}.0/24"],
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
-        db.add(peer)
-        await db.commit()
-        await db.refresh(peer)
-        await record_audit(
-            db, event="vpn.peer_create", user_id=user.id, target_id=peer.allocated_ip
-        )
+        if live:
+            await configure_peer(public_key=pub_key, ip=allocated_ip)
+            db.add(peer)
+            db.add(AuditLog(
+                event="vpn.peer_create", user_id=user.id, target_id=allocated_ip,
+            ))
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                # Reverse a successful installation when the ledger rejected it.
+                await configure_peer(public_key=pub_key, ip=allocated_ip, remove=True)
+                raise
+            await db.refresh(peer)
+        else:
+            db.add(peer)
+            await db.commit()
+            await db.refresh(peer)
+            await record_audit(
+                db, event="vpn.peer_create", user_id=user.id, target_id=peer.allocated_ip
+            )
+    elif live:
+        if peer.expires_at and peer.expires_at <= datetime.now(UTC):
+            raise HTTPException(status_code=409, detail="VPN peer expired; revoke it first.")
+        # Reconcile a live server restart before handing out existing records.
+        await configure_peer(public_key=peer.public_key, ip=peer.allocated_ip)
 
     return peer, generated_priv_key
 
@@ -182,7 +228,7 @@ async def generate_vpn_config(
     user: CurrentUser,
     client_public_key: str | None = None,
 ) -> VPNConfigOut:
-    """Render an explicitly configured *development* template for a new keypair."""
+    """Render client configuration only after live installation or dev preview."""
     _require_vpn_preview()
     endpoint, server_key = _validated_server_settings()
     # A public key supplied by the client cannot be converted to a private key.
@@ -202,7 +248,7 @@ async def generate_vpn_config(
     allowed_ips = "10.100.0.0/16, 10.200.0.0/24"
 
     config_text = f"""[Interface]
-# Development preview: the VPN server peer is not provisioned by CyberLab.
+{'' if _controller_enabled() else '# Development preview: peer not installed on a server.'}
 PrivateKey = {priv_key}
 Address = {peer.allocated_ip}/32
 
@@ -224,14 +270,51 @@ PersistentKeepalive = 25
 
 
 async def revoke_vpn_peer(db: AsyncSession, user: CurrentUser) -> None:
-    """Deactivate a development record; server-side revocation is unsupported."""
+    """Revoke all live server peers before committing their DB deactivation."""
     _require_vpn_preview()
+    live = _controller_enabled()
+    if live:
+        await db.execute(text("SELECT pg_advisory_xact_lock(417382991)"))
     peers = (
         await db.scalars(
             select(VPNPeer).where(VPNPeer.user_id == user.id, VPNPeer.is_active.is_(True))
         )
     ).all()
     for p in peers:
+        if live:
+            await configure_peer(public_key=p.public_key, ip=p.allocated_ip, remove=True)
         p.is_active = False
+    if live:
+        db.add(AuditLog(
+            event="vpn.peer_revoke", user_id=user.id, target_id=str(user.id),
+        ))
+        await db.commit()
+    else:
+        await db.commit()
+        await record_audit(db, event="vpn.peer_revoke", user_id=user.id, target_id=str(user.id))
+
+
+async def reconcile_wireguard_server_peers(db: AsyncSession) -> int:
+    """Restore live peer state after an interface restart and revoke expired keys."""
+    if not _controller_enabled():
+        return 0
+    _require_vpn_preview()
+    await db.execute(text("SELECT pg_advisory_xact_lock(417382991)"))
+    peers = (await db.scalars(
+        select(VPNPeer).where(VPNPeer.is_active.is_(True))
+    )).all()
+    checked = 0
+    for peer in peers:
+        expired = peer.expires_at is not None and peer.expires_at <= datetime.now(UTC)
+        await configure_peer(
+            public_key=peer.public_key, ip=peer.allocated_ip, remove=expired,
+        )
+        if expired:
+            peer.is_active = False
+            db.add(AuditLog(
+                event="vpn.peer_expire", user_id=peer.user_id,
+                target_id=peer.allocated_ip,
+            ))
+        checked += 1
     await db.commit()
-    await record_audit(db, event="vpn.peer_revoke", user_id=user.id, target_id=str(user.id))
+    return checked

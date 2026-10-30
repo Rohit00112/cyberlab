@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_permission
@@ -21,7 +21,7 @@ async def get_my_vpn_peer(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.view"))],
 ):
     """Get active VPN peer registration details for the authenticated user."""
-    peer, _ = await vpn_service.get_or_create_vpn_peer(db, user)
+    peer = await vpn_service.get_active_vpn_peer(db, user)
     return vpn_service._peer_to_out(peer) if peer else None
 
 
@@ -32,6 +32,11 @@ async def register_vpn_peer(
     user: Annotated[CurrentUser, Depends(require_permission("challenge.view"))],
 ):
     """Register or renew a WireGuard VPN peer for the authenticated user."""
+    if vpn_service._controller_enabled() and payload.client_public_key is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Register a client-generated public key or download a generated config.",
+        )
     peer, _ = await vpn_service.get_or_create_vpn_peer(
         db, user, client_public_key=payload.client_public_key
     )

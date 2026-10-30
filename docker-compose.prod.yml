@@ -23,6 +23,32 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Optional, explicitly-enabled privileged WireGuard server backend. The
+  # host must already have a correctly keyed wg0 interface and secure routing.
+  # Bring up only after reviewing host network access: --profile wireguard.
+  wireguard-controller:
+    profiles: [wireguard]
+    build:
+      context: ./apps/wireguard-controller
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    environment:
+      WG_INTERFACE: ${WIREGUARD_INTERFACE:-wg0}
+      WG_EXPECTED_PUBLIC_KEY: ${WIREGUARD_SERVER_PUBLIC_KEY:-}
+      WG_CONTROL_TOKEN: ${WIREGUARD_CONTROL_TOKEN:-}
+      WG_CONTROL_SOCKET: /run/cyberlab-wireguard/control.sock
+    volumes:
+      - wireguard_control:/run/cyberlab-wireguard
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,sys;sys.exit(0 if os.path.exists('/run/cyberlab-wireguard/control.sock') else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   security-core:
     environment:
       SECURITY_CORE_DATABASE_URL: postgres://cyberlab_security_core:${SECURITY_CORE_DB_PASSWORD:?Set a URL-safe password for Rust's read-only DB role}@postgres:5432/cyberlab
@@ -41,6 +67,19 @@ services:
       SECURITY_CORE_WRITE_DB_PASSWORD: ${SECURITY_CORE_WRITE_DB_PASSWORD:?Set a URL-safe password for Rust's write DB role}
     volumes:
       - ./infrastructure/docker/security-core-role.sql:/setup/security-core-role.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  security-core-role-verify:
+    profiles: [maintenance]
+    image: postgres:16-alpine
+    command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-h", "postgres", "-U", "${POSTGRES_USER}", "-d", "cyberlab", "-f", "/verify/verify-security-core-role.sql"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./infrastructure/docker/verify-security-core-role.sql:/verify/verify-security-core-role.sql:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,8 +147,13 @@ services:
       RUST_CORE_URL: http://security-core:8081
       RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
       LAB_DOCKER_SOCKET: /run/cyberlab-docker-control/docker.sock
+      WIREGUARD_CONTROL_SOCKET: /run/cyberlab-wireguard/control.sock
+      WIREGUARD_CONTROL_TOKEN: ${WIREGUARD_CONTROL_TOKEN:-}
+      WIREGUARD_ENDPOINT: ${WIREGUARD_ENDPOINT:-}
+      WIREGUARD_SERVER_PUBLIC_KEY: ${WIREGUARD_SERVER_PUBLIC_KEY:-}
     volumes: !override
       - docker_control:/run/cyberlab-docker-control
+      - wireguard_control:/run/cyberlab-wireguard
       - ./data/research:/app/data/research
     depends_on:
       postgres:
@@ -162,8 +206,13 @@ services:
       RUST_CORE_URL: http://security-core:8081
       RUST_CORE_SHARED_TOKEN: ${RUST_CORE_SHARED_TOKEN:?Set a 32+ character Rust core token in .env}
       LAB_DOCKER_SOCKET: /run/cyberlab-docker-control/docker.sock
+      WIREGUARD_CONTROL_SOCKET: /run/cyberlab-wireguard/control.sock
+      WIREGUARD_CONTROL_TOKEN: ${WIREGUARD_CONTROL_TOKEN:-}
+      WIREGUARD_ENDPOINT: ${WIREGUARD_ENDPOINT:-}
+      WIREGUARD_SERVER_PUBLIC_KEY: ${WIREGUARD_SERVER_PUBLIC_KEY:-}
     volumes: !override
       - docker_control:/run/cyberlab-docker-control
+      - wireguard_control:/run/cyberlab-wireguard
       - ./data/research:/app/data/research
     depends_on:
       docker-controller:
@@ -193,3 +242,4 @@ volumes:
   caddy_data:
   caddy_config:
   docker_control:
+  wireguard_control:

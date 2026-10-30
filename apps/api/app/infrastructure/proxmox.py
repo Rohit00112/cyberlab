@@ -23,6 +23,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from app.core.config import get_settings
+from app.core.flags import validate_guest_flag_command
 from app.infrastructure.base import LabProvider, LabProviderError
 
 logger = logging.getLogger("cyberlab.proxmox")
@@ -77,7 +78,7 @@ class ProxmoxLabProvider(LabProvider):
         path: str,
         *,
         json_data: dict | None = None,
-        params: dict | None = None,
+        params: dict | list[tuple[str, str]] | None = None,
     ) -> dict:
         url = f"{self.api_url}{path}"
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
@@ -151,6 +152,43 @@ class ProxmoxLabProvider(LabProvider):
         except TimeoutError as exc:
             raise ProxmoxError("Proxmox task did not finish before the deadline") from exc
 
+    async def _install_guest_flag(self, vmid: str, cmd: list[str]) -> None:
+        """Execute the one-shot writer through the QEMU guest agent and verify exit 0."""
+        try:
+            validate_guest_flag_command(cmd)
+        except ValueError as exc:
+            raise ProxmoxError("Invalid guest flag initializer") from exc
+        base = f"/api2/json/nodes/{self.node}/qemu/{self._vmid(vmid)}/agent"
+        try:
+            async with asyncio.timeout(90):
+                # PVE declares command as an alist: repeated command query fields,
+                # avoiding a second shell or interpretation by the Proxmox host.
+                started = await self._request(
+                    "POST", f"{base}/exec",
+                    params=[("command", part) for part in cmd],
+                )
+                pid_data = started.get("result", started) if isinstance(started, dict) else None
+                pid = pid_data.get("pid") if isinstance(pid_data, dict) else None
+                if not isinstance(pid, int) or pid <= 0:
+                    raise ProxmoxError("QEMU guest agent did not return an exec PID")
+                while True:
+                    status_data = await self._request(
+                        "GET", f"{base}/exec-status", params={"pid": pid},
+                    )
+                    result = (
+                        status_data.get("result", status_data)
+                        if isinstance(status_data, dict) else None
+                    )
+                    if not isinstance(result, dict):
+                        raise ProxmoxError("Invalid guest exec status")
+                    if result.get("exited") is True:
+                        if result.get("exitcode") != 0:
+                            raise ProxmoxError("Guest flag initializer exited unsuccessfully")
+                        return
+                    await asyncio.sleep(0.5)
+        except TimeoutError as exc:
+            raise ProxmoxError("Guest flag initialization exceeded 90 seconds") from exc
+
     async def ensure_network(self, name: str) -> None:
         """Require an existing provider bridge before any VM is created.
 
@@ -185,14 +223,12 @@ class ProxmoxLabProvider(LabProvider):
         Returns (new_vmid_str, ip_address).
         """
         if cmd:
-            # The Docker adapter executes lab_flag_command inside its new
-            # container. A Proxmox clone has no equivalent guest-initializer
-            # wired up yet, so silently dropping the command would claim that
-            # a flag-bearing challenge exists when no flag was installed.
-            raise ProxmoxError(
-                "Proxmox guest initialization is not configured; "
-                "cannot install a per-lab challenge flag"
-            )
+            try:
+                validate_guest_flag_command(cmd)
+            except ValueError as exc:
+                raise ProxmoxError(
+                    "Invalid guest flag command; cannot install a per-lab challenge flag"
+                ) from exc
         template_vmid = self._vmid(image)
         # Get next available VMID
         next_id_data = await self._request(
@@ -240,6 +276,8 @@ class ProxmoxLabProvider(LabProvider):
                 f"/api2/json/nodes/{self.node}/qemu/{new_vmid}/status/start",
             )
             await self._wait_for_task(start_task)
+            if cmd:
+                await self._install_guest_flag(new_vmid, cmd)
         except ProxmoxError as exc:
             # Do not offer a VMID for destructive cleanup unless the provider
             # confirms that it still belongs to this exact lab.

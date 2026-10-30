@@ -8,6 +8,7 @@ import logging
 from app.db.base import SessionLocal
 from app.services.competitions import auto_transition_competitions
 from app.services.labs import expire_stale_labs
+from app.services.vpn import reconcile_wireguard_server_peers
 from app.tasks.provisioning import redispatch_pending_provisioning_jobs
 from app.worker import celery_app
 
@@ -19,6 +20,7 @@ async def _run_maintenance_sweep() -> dict[str, int]:
         labs_changed = 0
         comp_changed = 0
         jobs_redispatched = 0
+        vpn_checked = 0
         try:
             labs_changed = await expire_stale_labs(db)
         except Exception:
@@ -36,10 +38,17 @@ async def _run_maintenance_sweep() -> dict[str, int]:
         except Exception:
             logger.exception("Celery pending provisioning redispatch failed")
 
+        try:
+            vpn_checked = await reconcile_wireguard_server_peers(db)
+        except Exception:
+            logger.exception("Celery WireGuard peer reconciliation failed")
+            await db.rollback()
+
         return {
             "labs_expired": labs_changed,
             "competitions_transitioned": comp_changed,
             "provisioning_jobs_redispatched": jobs_redispatched,
+            "vpn_peers_checked": vpn_checked,
         }
 
 

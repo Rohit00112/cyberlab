@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
-from app.core.flags import generate_lab_flag, hash_flag, lab_flag_command
+from app.core.flags import generate_lab_flag, guest_flag_command, hash_flag, lab_flag_command
 from app.core.lab_transitions import transition_lab
 from app.core.states import ACTIVE_STATES, LabState
 from app.infrastructure import docker as docker_adapter
@@ -90,8 +90,10 @@ async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:
     flag = generate_lab_flag()
     name = lab.container_name or _container_name(lab)
     provider = get_lab_provider()
+    vm_provider = get_settings().lab_provider in {"proxmox", "libvirt"}
     provider_ref, ip = await provider.create_lab(
-        name, lab_cfg["image"], lab.network_name, cmd=_flag_command(flag_path, flag)
+        name, lab_cfg["image"], lab.network_name,
+        cmd=guest_flag_command(flag_path, flag) if vm_provider else _flag_command(flag_path, flag),
     )
     settings = get_settings()
     lab.provider = settings.lab_provider

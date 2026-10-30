@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # and revocation on the VPN server are not implemented by this application.
     wireguard_endpoint: str = ""
     wireguard_server_public_key: str = ""
+    # The production backend uses a privileged local controller, never wg
+    # capabilities or the host network namespace in the API/Celery processes.
+    wireguard_control_socket: str = ""
+    wireguard_control_token: str = ""
 
     # Research platform (Phase 6, PRD §70-§72)
     research_data_dir: str = "data/research"

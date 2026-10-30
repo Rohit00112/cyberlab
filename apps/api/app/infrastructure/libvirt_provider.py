@@ -8,10 +8,12 @@ or full OS root isolation.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
+from app.core.flags import validate_guest_flag_command
 from app.infrastructure.base import LabProvider, LabProviderError
 
 logger = logging.getLogger("cyberlab.infrastructure.libvirt")
@@ -97,6 +99,49 @@ class LibvirtLabProvider(LabProvider):
         except Exception as exc:
             raise LabProviderError(f"libvirt network setup failed: {exc}") from exc
 
+    async def _install_guest_flag(self, domain_uuid: str, cmd: list[str]) -> None:
+        """Verify a one-shot guest-exec exit code over the QEMU agent channel."""
+        validate_guest_flag_command(cmd)
+        try:
+            import libvirt_qemu  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise LabProviderError(
+                "libvirt QEMU guest-agent bindings are required for flags"
+            ) from exc
+
+        def call_agent(command: dict) -> dict:
+            domain = self._get_connection().lookupByUUIDString(domain_uuid)
+            response = libvirt_qemu.qemuAgentCommand(domain, json.dumps(command), 10, 0)
+            data = json.loads(response)
+            if not isinstance(data, dict) or "error" in data or "return" not in data:
+                raise LabProviderError("QEMU guest agent rejected flag initializer")
+            return data["return"]
+
+        try:
+            async with asyncio.timeout(90):
+                started = await asyncio.to_thread(call_agent, {
+                    "execute": "guest-exec",
+                    "arguments": {
+                        "path": cmd[0], "arg": cmd[1:], "capture-output": False,
+                    },
+                })
+                pid = started.get("pid") if isinstance(started, dict) else None
+                if not isinstance(pid, int) or pid <= 0:
+                    raise LabProviderError("Guest agent did not return a process identifier")
+                while True:
+                    result = await asyncio.to_thread(call_agent, {
+                        "execute": "guest-exec-status", "arguments": {"pid": pid},
+                    })
+                    if not isinstance(result, dict):
+                        raise LabProviderError("Invalid guest agent status")
+                    if result.get("exited") is True:
+                        if result.get("exitcode") != 0:
+                            raise LabProviderError("Guest flag initializer failed")
+                        return
+                    await asyncio.sleep(0.5)
+        except TimeoutError as exc:
+            raise LabProviderError("Guest flag initialization exceeded 90 seconds") from exc
+
     async def create_lab(
         self,
         name: str,
@@ -111,12 +156,12 @@ class LibvirtLabProvider(LabProvider):
         """Clone base qcow2 disk, define transient domain, and boot VM."""
         self._require_available()
         if cmd:
-            # No guest-agent/cloud-init execution path currently injects the
-            # per-lab flag command. Refuse the VM before defining a domain.
-            raise LabProviderError(
-                "libvirt guest initialization is not configured; "
-                "cannot install a per-lab challenge flag"
-            )
+            try:
+                validate_guest_flag_command(cmd)
+            except ValueError as exc:
+                raise LabProviderError(
+                    "Invalid guest flag command; cannot install a per-lab challenge flag"
+                ) from exc
 
         loop = asyncio.get_running_loop()
         memory_kib = int((memory_limit_mb or 1024) * 1024)
@@ -143,6 +188,9 @@ class LibvirtLabProvider(LabProvider):
             </interface>
             <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
             <console type='pty'/>
+            <channel type='unix'>
+              <target type='virtio' name='org.qemu.guest_agent.0'/>
+            </channel>
           </devices>
         </domain>
         """
@@ -154,10 +202,20 @@ class LibvirtLabProvider(LabProvider):
 
         try:
             domain_uuid = await loop.run_in_executor(None, _sync_create)
+            if cmd:
+                try:
+                    await self._install_guest_flag(domain_uuid, cmd)
+                except Exception as exc:
+                    raise LabProviderError(
+                        "Guest flag installation failed; VM requires compensation",
+                        provider_ref=domain_uuid,
+                    ) from exc
             # DHCP leases/guest agent data may lag VM startup. Do not invent
             # an address that might point at a different user's environment.
             ip = await self.inspect_ip(domain_uuid, network) or "pending"
             return domain_uuid, ip
+        except LabProviderError:
+            raise
         except Exception as exc:
             raise LabProviderError(f"Failed to create libvirt domain {name}: {exc}") from exc
 

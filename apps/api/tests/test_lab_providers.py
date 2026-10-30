@@ -150,6 +150,76 @@ class TestProviderFactory:
 
 class TestLibvirtFailClosed:
     @pytest.mark.asyncio
+    async def test_guest_flag_installed_before_reporting_domain(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.core.flags import guest_flag_command
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        class Connection:
+            def createXML(self, xml, _flags):
+                assert "org.qemu.guest_agent.0" in xml
+                return type("Domain", (), {"UUIDString": lambda self: "vm-uuid"})()
+
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = Connection()
+        installer = AsyncMock()
+        monkeypatch.setattr(provider, "_install_guest_flag", installer)
+        monkeypatch.setattr(provider, "inspect_ip", AsyncMock(return_value="192.0.2.22"))
+        cmd = guest_flag_command("/flag.txt", "IIC{sample}")
+        assert await provider.create_lab(
+            "student-vm", "/images/test.qcow2", "lab-net", cmd=cmd,
+        ) == ("vm-uuid", "192.0.2.22")
+        installer.assert_awaited_once_with("vm-uuid", cmd)
+        installer.side_effect = RuntimeError("agent missing")
+        with pytest.raises(LabProviderError) as exc:
+            await provider.create_lab(
+                "student-vm", "/images/test.qcow2", "lab-net", cmd=cmd,
+            )
+        assert exc.value.provider_ref == "vm-uuid"
+
+    @pytest.mark.asyncio
+    async def test_qemu_agent_requires_successful_guest_exit(self, monkeypatch):
+        import json
+        import sys
+        from types import SimpleNamespace
+
+        from app.core.flags import guest_flag_command
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        calls = []
+
+        def qemu_call(_domain, raw, _timeout, _flags):
+            command = json.loads(raw)
+            calls.append(command)
+            if command["execute"] == "guest-exec":
+                return json.dumps({"return": {"pid": 144}})
+            return json.dumps({"return": {"exited": True, "exitcode": 0}})
+
+        monkeypatch.setitem(
+            sys.modules, "libvirt_qemu",
+            SimpleNamespace(qemuAgentCommand=qemu_call),
+        )
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = SimpleNamespace(lookupByUUIDString=lambda _ref: object())
+        command = guest_flag_command("/flag.txt", "IIC{sample}")
+        await provider._install_guest_flag("vm-uuid", command)
+        assert calls[0]["arguments"]["path"] == "/bin/sh"
+        assert calls[0]["arguments"]["arg"] == command[1:]
+        assert calls[1]["arguments"] == {"pid": 144}
+
+        def denied(_domain, raw, _timeout, _flags):
+            if json.loads(raw)["execute"] == "guest-exec":
+                return json.dumps({"return": {"pid": 144}})
+            return json.dumps({"return": {"exited": True, "exitcode": 1}})
+
+        monkeypatch.setattr(sys.modules["libvirt_qemu"], "qemuAgentCommand", denied)
+        with pytest.raises(LabProviderError, match="initializer failed"):
+            await provider._install_guest_flag("vm-uuid", command)
+
+    @pytest.mark.asyncio
     async def test_flag_initialization_is_required_before_defining_a_vm(self):
         from app.infrastructure.libvirt_provider import LibvirtLabProvider
 
@@ -278,6 +348,40 @@ def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
 
 class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
+
+    @pytest.mark.asyncio
+    async def test_guest_flag_exec_requires_verified_zero_exit(self, monkeypatch):
+        from app.core.flags import guest_flag_command
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        command = guest_flag_command("/flag.txt", "IIC{sample}")
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if path.endswith("/agent/exec"):
+                return {"pid": 4242}
+            if path.endswith("/agent/exec-status"):
+                return {"exited": True, "exitcode": 0}
+            raise AssertionError(path)
+
+        monkeypatch.setattr(provider, "_request", request)
+        await provider._install_guest_flag("135", command)
+        assert calls[0][2]["params"] == [
+            ("command", "/bin/sh"), ("command", "-c"),
+            ("command", command[2]),
+        ]
+        assert calls[1][2]["params"] == {"pid": 4242}
+
+        async def failed_request(method, path, **kwargs):
+            if path.endswith("/agent/exec"):
+                return {"pid": 4242}
+            return {"exited": True, "exitcode": 1}
+
+        monkeypatch.setattr(provider, "_request", failed_request)
+        with pytest.raises(ProxmoxError, match="exited unsuccessfully"):
+            await provider._install_guest_flag("135", command)
 
     @pytest.mark.asyncio
     async def test_flag_initialization_is_required_before_cloning_a_vm(self, monkeypatch):
