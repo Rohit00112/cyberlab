@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from app.infrastructure.docker import DockerError
-from app.models import AuditLog, Challenge, LabInstance, User
+from app.models import AuditLog, Challenge, LabInstance, ProvisioningJob, User
 from app.services.labs import expire_stale_labs
 
 
@@ -92,6 +92,41 @@ async def test_sweep_flags_provisioning_stuck_lab(test_db, monkeypatch):
         assert (await db.scalars(select(AuditLog.event))).all() == [
             "lab.provisioning_timeout",
         ]
+
+
+async def test_provisioning_timeout_uses_claim_time_and_fails_job_atomically(test_db):
+    user_id, challenge_id = await _seed_user_and_challenge(test_db)
+    lab = await _add_lab(
+        test_db, user_id, challenge_id,
+        status="provisioning", created_at=datetime.now(UTC) - timedelta(hours=3),
+    )
+    async with test_db() as db:
+        job = ProvisioningJob(
+            lab_instance_id=lab.id, user_id=user_id, challenge_id=challenge_id,
+            status="running", started_at=datetime.now(UTC),
+        )
+        db.add(job)
+        await db.commit()
+        job_id = job.id
+
+    async with test_db() as db:
+        assert await expire_stale_labs(db) == 0
+    async with test_db() as db:
+        assert (await db.get(LabInstance, lab.id)).status == "provisioning"
+        job = await db.get(ProvisioningJob, job_id)
+        job.started_at = datetime.now(UTC) - timedelta(minutes=40)
+        await db.commit()
+
+    async with test_db() as db:
+        assert await expire_stale_labs(db) == 1
+    async with test_db() as db:
+        assert (await db.get(LabInstance, lab.id)).status == "error"
+        job = await db.get(ProvisioningJob, job_id)
+        assert job.status == "failed"
+        assert job.completed_at is not None
+        event = (await db.scalars(select(AuditLog))).one()
+        assert event.event == "lab.provisioning_timeout"
+        assert event.details == {"job_id": str(job_id)}
 
 
 async def test_sweep_does_not_hide_unstopped_running_lab(test_db, monkeypatch):

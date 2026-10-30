@@ -678,6 +678,57 @@ async def test_provisioning_worker_preserves_python_fallback(test_db, monkeypatc
         assert result.status == "running" and result.provider_ref == "fallback-ref"
 
 
+async def test_python_worker_does_not_revive_lab_failed_during_network_setup(
+    test_db, monkeypatch
+):
+    from app.core import lab_transitions
+    from app.tasks import provisioning
+
+    user = _student(sub=f"lab-stale-worker-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, user)
+    challenge = await _seed_challenge(
+        test_db, slug=f"_lsw_{uuid.uuid4().hex[:6]}"
+    )
+    async with test_db() as db:
+        lab = LabInstance(
+            user_id=user.id, challenge_id=challenge.id, status="queued",
+            network_name="stale-worker-network",
+        )
+        db.add(lab)
+        await db.flush()
+        job = ProvisioningJob(
+            lab_instance_id=lab.id, user_id=user.id,
+            challenge_id=challenge.id, status="pending",
+        )
+        db.add(job)
+        await db.commit()
+        job_id, lab_id = job.id, lab.id
+
+    async def fail_while_waiting(_network_name: str) -> None:
+        async with test_db() as db:
+            pending_lab = await db.get(LabInstance, lab_id)
+            pending_job = await db.get(ProvisioningJob, job_id)
+            pending_lab.status = "error"
+            pending_job.status = "failed"
+            await db.commit()
+
+    settings = SimpleNamespace(rust_core_url="")
+    monkeypatch.setattr(provisioning, "get_settings", lambda: settings)
+    monkeypatch.setattr(lab_transitions, "get_settings", lambda: settings)
+    monkeypatch.setattr(provisioning, "SessionLocal", test_db)
+    provider = SimpleNamespace(
+        ensure_network=AsyncMock(side_effect=fail_while_waiting),
+        create_lab=AsyncMock(return_value=("should-not-create", "192.0.2.12")),
+    )
+    monkeypatch.setattr(provisioning, "get_lab_provider", lambda _name: provider)
+
+    assert await provisioning.execute_provisioning_job(str(job_id)) is False
+    provider.create_lab.assert_not_awaited()
+    async with test_db() as db:
+        assert (await db.get(LabInstance, lab_id)).status == "error"
+        assert (await db.get(ProvisioningJob, job_id)).status == "failed"
+
+
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 async def test_worker_compensates_if_processing_fails_after_provider_create(
     test_db, monkeypatch, cleanup_fails

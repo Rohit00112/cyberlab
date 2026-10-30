@@ -97,6 +97,30 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
                 await db.refresh(lab)
                 await db.refresh(job)
             else:
+                # A maintenance sweep may have failed this job while the
+                # provider network was being prepared. Recheck authoritative
+                # state under row locks before launching an environment.
+                await db.rollback()
+                # Match the Rust/maintenance lock order: job, then lab.
+                job = await db.scalar(
+                    select(ProvisioningJob)
+                    .where(ProvisioningJob.id == job_uuid)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                lab = await db.scalar(
+                    select(LabInstance)
+                    .where(LabInstance.id == lab_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if (
+                    lab is None or job is None
+                    or lab.status != LabState.PROVISIONING.value
+                    or job.status != "running"
+                ):
+                    await db.rollback()
+                    return False
                 lab.status = (await transition_lab(lab.status, LabState.STARTING)).value
                 await db.commit()
 

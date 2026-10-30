@@ -551,14 +551,43 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             ))
             changed += 1
         elif lab.status == "provisioning" and lab.created_at:
-            if now - lab.created_at.replace(tzinfo=UTC) > timedelta(
+            active_job = await db.scalar(
+                select(ProvisioningJob)
+                .where(
+                    ProvisioningJob.lab_instance_id == lab.id,
+                    ProvisioningJob.status == "running",
+                )
+                .order_by(ProvisioningJob.created_at.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            current_lab = await db.scalar(
+                select(LabInstance)
+                .where(LabInstance.id == lab.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if current_lab is None or current_lab.status != "provisioning":
+                # The worker may have advanced the lab while this sweep waited
+                # for its job lock. Never overwrite a newer state.
+                continue
+            lab = current_lab
+            # A lab may wait queued for hours before its job is claimed.
+            # Timeout from the actual claim, not the original request.
+            since = (active_job.started_at if active_job else None) or lab.created_at
+            if now - since.replace(tzinfo=UTC) > timedelta(
                 minutes=settings.lab_provisioning_timeout_minutes
             ):
                 lab.status = "error"
                 lab.error_message = "Provisioning timed out."
+                if active_job:
+                    active_job.status = "failed"
+                    active_job.completed_at = now
+                    active_job.error_message = "Provisioning timed out."
                 db.add(AuditLog(
                     event="lab.provisioning_timeout", user_id=lab.user_id,
                     target_id=str(lab.id),
+                    details={"job_id": str(active_job.id)} if active_job else None,
                 ))
                 changed += 1
     if changed:
