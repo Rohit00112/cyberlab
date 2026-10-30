@@ -45,7 +45,7 @@ def _require_vpn_preview() -> None:
 def _validated_public_key(value: str, *, client: bool) -> str:
     """Require a canonical 32-byte WireGuard public key, without whitespace."""
     invalid_status = (
-        status.HTTP_422_UNPROCESSABLE_ENTITY if client else status.HTTP_503_SERVICE_UNAVAILABLE
+        status.HTTP_422_UNPROCESSABLE_CONTENT if client else status.HTTP_503_SERVICE_UNAVAILABLE
     )
     label = "client" if client else "server"
     try:
@@ -215,6 +215,11 @@ async def get_or_create_vpn_peer(
                 db, event="vpn.peer_create", user_id=user.id, target_id=peer.allocated_ip
             )
     elif live:
+        if validated_client_key is not None and peer.public_key != validated_client_key:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An active VPN peer already exists for another key; revoke it first.",
+            )
         if peer.expires_at and peer.expires_at <= datetime.now(UTC):
             raise HTTPException(status_code=409, detail="VPN peer expired; revoke it first.")
         # Reconcile a live server restart before handing out existing records.

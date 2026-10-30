@@ -6,10 +6,10 @@ import base64
 import importlib.util
 import json
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -141,6 +141,10 @@ async def test_production_peer_installation_and_revocation_are_verified(
         )) == 1
         existing, _ = await vpn.get_or_create_vpn_peer(db, user, client_public_key=KEY)
         assert existing.id == peer.id
+        different_key = base64.b64encode(bytes(range(1, 33))).decode("ascii")
+        with pytest.raises(HTTPException) as conflict:
+            await vpn.get_or_create_vpn_peer(db, user, client_public_key=different_key)
+        assert conflict.value.status_code == 409
         assert await vpn.get_active_vpn_peer(db, user) is not None
         await vpn.revoke_vpn_peer(db, user)
         assert (await db.get(VPNPeer, peer.id)).is_active is False

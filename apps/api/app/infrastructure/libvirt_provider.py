@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape, quoteattr
 
 from app.core.flags import validate_guest_flag_command
@@ -167,9 +169,17 @@ class LibvirtLabProvider(LabProvider):
         memory_kib = int((memory_limit_mb or 1024) * 1024)
         vcpus = max(1, int(cpu_limit or 1))
 
-        xml = f"""
+        # Never attach the template's writable disk to multiple guests. Clone
+        # via the libvirt storage daemon (which also works over remote libvirt
+        # connections), and retain an ownership marker for eventual cleanup.
+        overlay_id = uuid.uuid4().hex
+        overlay_name = f"cyberlab-{overlay_id}.qcow2"
+
+        def _domain_xml(disk_path: str) -> str:
+            return f"""
         <domain type='kvm'>
           <name>{escape(name)}</name>
+          <description>cyberlab-overlay:{overlay_id}</description>
           <memory unit='KiB'>{memory_kib}</memory>
           <vcpu placement='static'>{vcpus}</vcpu>
           <os>
@@ -179,7 +189,7 @@ class LibvirtLabProvider(LabProvider):
           <devices>
             <disk type='file' device='disk'>
               <driver name='qemu' type='qcow2'/>
-              <source file={quoteattr(image)}/>
+              <source file={quoteattr(disk_path)}/>
               <target dev='vda' bus='virtio'/>
             </disk>
             <interface type='network'>
@@ -197,8 +207,20 @@ class LibvirtLabProvider(LabProvider):
 
         def _sync_create():
             conn = self._get_connection()
-            dom = conn.createXML(xml, 0)
-            return dom.UUIDString()
+            source = conn.storageVolLookupByPath(image)
+            pool = conn.storagePoolLookupByVolume(source)
+            new_vol = pool.storageVolCreateXMLFrom(
+                "<volume><name>" + overlay_name + "</name>"
+                "<target><format type='qcow2'/></target></volume>",
+                source, 0,
+            )
+            try:
+                dom = conn.createXML(_domain_xml(new_vol.path()), 0)
+                return dom.UUIDString()
+            except Exception:
+                # Domain was never started: release only the cloned volume.
+                new_vol.delete(0)
+                raise
 
         try:
             domain_uuid = await loop.run_in_executor(None, _sync_create)
@@ -238,8 +260,36 @@ class LibvirtLabProvider(LabProvider):
         await loop.run_in_executor(None, _sync_stop)
 
     async def remove_lab(self, provider_ref: str) -> None:
-        """Stop and undefine the domain."""
-        await self.stop_lab(provider_ref)
+        """Stop the owned transient domain, then delete only its own clone."""
+        self._require_available()
+
+        def _sync_remove():
+            conn = self._get_connection()
+            dom = conn.lookupByUUIDString(provider_ref)
+            root = ElementTree.fromstring(dom.XMLDesc(0))
+            description = root.findtext("description", "")
+            disk = root.find("./devices/disk[@device='disk']/source")
+            if not description.startswith("cyberlab-overlay:") or disk is None:
+                raise LabProviderError("Refusing to delete an unowned libvirt disk")
+            token = description.removeprefix("cyberlab-overlay:")
+            if len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
+                raise LabProviderError("Invalid libvirt clone ownership marker")
+            disk_path = disk.get("file", "")
+            volume = conn.storageVolLookupByPath(disk_path)
+            if volume.name() != f"cyberlab-{token}.qcow2":
+                raise LabProviderError("Libvirt disk ownership does not match domain")
+            if dom.isActive():
+                dom.destroy()
+            volume.delete(0)
+
+        try:
+            await asyncio.to_thread(_sync_remove)
+        except LabProviderError:
+            raise
+        except Exception as exc:
+            raise LabProviderError(
+                f"Failed to remove owned libvirt domain {provider_ref}"
+            ) from exc
 
     async def inspect_ip(self, provider_ref: str, network: str) -> str | None:
         """Read IP address from guest agent or DHCP leases."""

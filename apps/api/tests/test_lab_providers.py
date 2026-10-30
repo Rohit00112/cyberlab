@@ -156,9 +156,29 @@ class TestLibvirtFailClosed:
         from app.core.flags import guest_flag_command
         from app.infrastructure.libvirt_provider import LibvirtLabProvider
 
+        class Volume:
+            def path(self):
+                return "/images/isolated-clone.qcow2"
+
+            def delete(self, _flags):
+                raise AssertionError("successful clones must not be deleted")
+
+        class Pool:
+            def storageVolCreateXMLFrom(self, xml, _source, _flags):
+                assert "cyberlab-" in xml
+                return Volume()
+
         class Connection:
+            def storageVolLookupByPath(self, path):
+                assert path == "/images/test.qcow2"
+                return Volume()
+
+            def storagePoolLookupByVolume(self, _source):
+                return Pool()
+
             def createXML(self, xml, _flags):
                 assert "org.qemu.guest_agent.0" in xml
+                assert "/images/isolated-clone.qcow2" in xml
                 return type("Domain", (), {"UUIDString": lambda self: "vm-uuid"})()
 
         provider = LibvirtLabProvider()
@@ -276,7 +296,25 @@ class TestLibvirtFailClosed:
 
         captured = []
 
+        class Volume:
+            def path(self):
+                return "/images/student-isolated.qcow2"
+
+            def delete(self, _flags):
+                raise AssertionError("successful clone not cleaned yet")
+
+        class Pool:
+            def storageVolCreateXMLFrom(self, xml, _source, _flags):
+                assert "cyberlab-" in xml
+                return Volume()
+
         class FakeConnection:
+            def storageVolLookupByPath(self, _path):
+                return Volume()
+
+            def storagePoolLookupByVolume(self, _source):
+                return Pool()
+
             def createXML(self, xml, _flags):
                 captured.append(xml)
                 return type("Domain", (), {"UUIDString": lambda self: "domain-uuid"})()
@@ -292,11 +330,64 @@ class TestLibvirtFailClosed:
         assert ref == "domain-uuid" and ip == "192.0.2.20"
         document = ElementTree.fromstring(captured[0])
         assert document.findtext("name") == name
-        assert document.find(".//source[@file]").attrib["file"] == image
+        assert document.find(".//source[@file]").attrib["file"] == "/images/student-isolated.qcow2"
+        assert document.findtext("description", "").startswith("cyberlab-overlay:")
         assert document.find(".//source[@network]").attrib["network"] == network
         monkeypatch.setattr(provider, "inspect_ip", AsyncMock(return_value=None))
         _, unresolved_ip = await provider.create_lab("another-lab", image, network)
         assert unresolved_ip == "pending"
+
+    @pytest.mark.asyncio
+    async def test_libvirt_removal_only_deletes_owned_guest_clone(self):
+        from app.infrastructure.libvirt_provider import LibvirtLabProvider
+
+        token = "a" * 32
+        disk_path = f"/images/cyberlab-{token}.qcow2"
+        events = []
+
+        class Volume:
+            def name(self):
+                return f"cyberlab-{token}.qcow2"
+
+            def delete(self, _flags):
+                events.append("delete-volume")
+
+        class Domain:
+            def __init__(self, owned):
+                self.owned = owned
+
+            def XMLDesc(self, _flags):
+                marker = f"cyberlab-overlay:{token}" if self.owned else "foreign"
+                return (f"<domain><description>{marker}</description><devices>"
+                        f"<disk device='disk'><source file='{disk_path}'/>"
+                        "</disk></devices></domain>")
+
+            def isActive(self):
+                return True
+
+            def destroy(self):
+                events.append("destroy-domain")
+
+        class Connection:
+            owned = False
+
+            def lookupByUUIDString(self, _uuid):
+                return Domain(self.owned)
+
+            def storageVolLookupByPath(self, path):
+                assert path == disk_path
+                return Volume()
+
+        conn = Connection()
+        provider = LibvirtLabProvider()
+        provider._available = True
+        provider._conn = conn
+        with pytest.raises(LabProviderError, match="unowned"):
+            await provider.remove_lab("domain-id")
+        assert events == []
+        conn.owned = True
+        await provider.remove_lab("domain-id")
+        assert events == ["destroy-domain", "delete-volume"]
 
 
 @pytest.mark.parametrize("failed_stage", ["start", "inspect"])
