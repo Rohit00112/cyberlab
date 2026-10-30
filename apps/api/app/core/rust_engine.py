@@ -395,6 +395,40 @@ async def extend_lab_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust lab response")
 
 
+async def finalize_lab_stop_in_rust(
+    lab_id: str, actor_id: str, roles: list[str],
+    ip_address: str | None, expected_provider_ref: str | None,
+) -> None:
+    """Persist the confirmed provider stop and its audit in one Rust transaction."""
+    result = await _post("/v1/labs/stop/finalize", {
+        "lab_id": lab_id, "actor_id": actor_id, "roles": roles,
+        "ip_address": ip_address, "expected_provider_ref": expected_provider_ref,
+    })
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+    outcome = result.get("outcome")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Lab not found")
+    if outcome == "not_running":
+        current = result.get("current_status")
+        if current not in {
+            "queued", "provisioning", "starting", "stopping",
+            "resetting", "terminating", "terminated", "failed", "expired", "error",
+        }:
+            raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+        raise HTTPException(
+            status_code=409, detail=f"Cannot stop lab in status '{current}'",
+        )
+    if outcome == "provider_missing":
+        raise HTTPException(status_code=503, detail="Lab provider reference is missing")
+    if outcome == "stale_provider":
+        raise HTTPException(
+            status_code=409, detail="Lab provider changed during stop; retry",
+        )
+    if outcome not in {"stopped", "already_stopped"} or result.get("current_status") is not None:
+        raise HTTPException(status_code=503, detail="Invalid Rust lab response")
+
+
 async def claim_provisioning_job_in_rust(job_id: str) -> bool:
     """Claim one pending job and its queued lab atomically before provider I/O."""
     result = await _post("/v1/labs/provisioning/claim", {"job_id": job_id})

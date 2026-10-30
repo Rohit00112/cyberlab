@@ -337,6 +337,30 @@ async def stop_lab(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Lab provider reference is missing",
         )
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import finalize_lab_stop_in_rust
+
+        lab_id = lab.id
+        if lab.status == LabState.RUNNING.value and ref:
+            try:
+                await _lab_provider_for(lab).stop_lab(ref)
+            except (DockerError, LabProviderError) as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Unable to stop lab environment",
+                ) from exc
+        # Discard the ORM snapshot before the Rust row lock and status/audit
+        # transaction. A concurrent reset may have replaced the provider ref.
+        await db.rollback()
+        await finalize_lab_stop_in_rust(
+            str(lab_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None, ref,
+        )
+        refreshed = await db.get(LabInstance, lab_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Lab not found")
+        return await _to_out(db, refreshed)
     if lab.status in (LabState.RUNNING.value, "running") and ref:
         try:
             lab.status = (await transition_lab(lab.status, LabState.STOPPING)).value

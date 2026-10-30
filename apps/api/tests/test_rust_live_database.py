@@ -618,6 +618,165 @@ async def test_live_catalog_and_leaderboard_api_match_python(
         app.dependency_overrides.pop(get_current_user, None)
 
 
+async def test_rust_lab_stop_contract_authorization_handle_and_atomic_audit(
+    live_rust_database, monkeypatch
+):
+    """Real Rust/PostgreSQL manual stop; the external provider is stubbed."""
+    from app.services import labs
+
+    ctx = live_rust_database
+    owner_id, other_id, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(labs, "get_settings", lambda: settings)
+    stop_provider = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        labs, "_lab_provider_for",
+        lambda _lab: SimpleNamespace(stop_lab=stop_provider),
+    )
+    async with ctx.factory() as db:
+        running = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="owned-container", container_id="owned-container",
+        )
+        stale = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="new-container",
+        )
+        queued = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="queued",
+        )
+        rollback = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="rollback-container",
+        )
+        db.add_all([running, stale, queued, rollback])
+        await db.commit()
+        running_id, stale_id = running.id, stale.id
+        queued_id, rollback_id = queued.id, rollback.id
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=owner_id, keycloak_sub="stop-test", roles=["student"],
+        permissions=["lab.launch"],
+    )
+    internal = f"{ctx.rust_url}/v1/labs/stop/finalize"
+    payload = {
+        "lab_id": str(stale_id), "actor_id": str(owner_id),
+        "roles": ["student"], "ip_address": "127.0.0.1",
+        "expected_provider_ref": "old-container",
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await client.post(f"/api/v1/labs/{running_id}/stop")
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "stopped"
+            repeated = await client.post(f"/api/v1/labs/{running_id}/stop")
+            assert repeated.status_code == 200
+            assert repeated.json()["status"] == "stopped"
+        stop_provider.assert_awaited_once_with("owned-container")
+
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            assert (await client.post(internal, json=payload)).status_code == 401
+            for changes, expected_status, outcome in [
+                ({"actor_id": str(other_id)}, 403, None),
+                ({"roles": ["guest"]}, 403, None),
+                ({}, 200, "stale_provider"),
+                ({"lab_id": str(queued_id), "expected_provider_ref": None},
+                 200, "not_running"),
+            ]:
+                response = await client.post(
+                    internal, json={**payload, **changes},
+                    headers={"x-internal-token": ctx.token},
+                )
+                assert response.status_code == expected_status, response.text
+                if outcome:
+                    assert response.json()["outcome"] == outcome
+
+        async with ctx.factory() as db:
+            assert (await db.get(LabInstance, running_id)).status == "stopped"
+            assert (await db.get(LabInstance, stale_id)).status == "running"
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.stop",
+                AuditLog.target_id == str(running_id),
+            )) == 1
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.stop",
+                AuditLog.target_id == str(stale_id),
+            )) == 0
+
+        # Execute the writer's exact SQL under a disposable column-limited
+        # PostgreSQL role, without granting broad lab/provider access.
+        role = f"cyberlab_stop_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+                await db.execute(text(
+                    'GRANT SELECT (id, user_id, status, provider_ref, container_id) '
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (status, updated_at) '
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{role}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{role}"'))
+                row = (await db.execute(text(
+                    'SELECT user_id::text, status, COALESCE(provider_ref, container_id) '
+                    'FROM lab_instances WHERE id = :lab_id FOR UPDATE'
+                ), {"lab_id": stale_id})).one()
+                assert row == (str(owner_id), "running", "new-container")
+                await db.execute(text(
+                    "UPDATE lab_instances SET status = 'stopped', updated_at = now() "
+                    "WHERE id = :lab_id"
+                ), {"lab_id": stale_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address) "
+                    "VALUES (gen_random_uuid(), 'lab.stop', :uid, :lid, '127.0.0.1')"
+                ), {"uid": owner_id, "lid": str(stale_id)})
+            finally:
+                await db.rollback()
+
+        # Force audit insertion to fail: the status write must roll back too.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_stop "
+                "CHECK (event <> 'lab.stop') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            failed = await client.post(
+                internal, json={
+                    **payload, "lab_id": str(rollback_id),
+                    "expected_provider_ref": "rollback-container",
+                },
+                headers={"x-internal-token": ctx.token},
+            )
+            assert failed.status_code == 503, failed.text
+        async with ctx.factory() as db:
+            assert (await db.get(LabInstance, rollback_id)).status == "running"
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.stop",
+                AuditLog.target_id == str(rollback_id),
+            )) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 async def test_rust_hint_reveals_are_ordered_idempotent_and_audited_atomically(
     live_rust_database, monkeypatch,
 ):

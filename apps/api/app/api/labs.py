@@ -81,7 +81,7 @@ async def lab_events(
 ):
     """Server-Sent Events (SSE) stream for real-time lab provisioning and status."""
     lab = await _get_lab(db, lab_id)
-    if not lab_service._can_manage_lab(user, lab):
+    if not await lab_service._can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     async def event_generator():

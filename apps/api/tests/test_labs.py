@@ -398,6 +398,26 @@ async def test_cannot_manage_someone_elses_lab(test_db):
     app.dependency_overrides.clear()
 
 
+async def test_lab_event_stream_enforces_lab_ownership(test_db):
+    owner = _student(sub=f"lab-events-owner-{uuid.uuid4().hex[:6]}")
+    other = _student(sub=f"lab-events-other-{uuid.uuid4().hex[:6]}")
+    await _ensure_user(test_db, owner)
+    await _ensure_user(test_db, other)
+    challenge = await _seed_challenge(test_db, slug=f"_lev_{uuid.uuid4().hex[:6]}")
+
+    async with _make_client(test_db, owner) as client:
+        lab = (await client.post(
+            f"/api/v1/challenges/{challenge.id}/lab/launch"
+        )).json()
+    app.dependency_overrides.clear()
+
+    async with _make_client(test_db, other) as client:
+        response = await client.get(f"/api/v1/labs/{lab['id']}/events")
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Forbidden"
+    app.dependency_overrides.clear()
+
+
 async def test_launch_returns_503_on_docker_failure(test_db, monkeypatch):
     async def boom(*args, **kwargs):
         raise DockerError("daemon unreachable")

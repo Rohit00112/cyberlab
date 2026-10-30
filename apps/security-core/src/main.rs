@@ -49,6 +49,9 @@ use cyberlab_security_core::lab_provisioning::{
     fail as fail_provisioning_job, start as start_provisioning_job, ProvisioningClaimRequest,
     ProvisioningClaimResponse, ProvisioningCompleteRequest, ProvisioningFailRequest,
 };
+use cyberlab_security_core::lab_stop::{
+    finalize as finalize_lab_stop, LabStopRequest, LabStopResponse,
+};
 use cyberlab_security_core::leaderboard::{
     global_leaderboard, LeaderboardError, LeaderboardQuery, LeaderboardRow,
 };
@@ -569,6 +572,26 @@ async fn extend_lab_lease_route(
     }
 }
 
+async fn finalize_lab_stop_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<LabStopRequest>,
+) -> Result<Json<LabStopResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match finalize_lab_stop(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 async fn claim_provisioning_job_route(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -710,6 +733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/hints/reveal", post(reveal_hint_route))
         .route("/v1/lab-transition", post(lab_transition))
         .route("/v1/labs/extend", post(extend_lab_lease_route))
+        .route("/v1/labs/stop/finalize", post(finalize_lab_stop_route))
         .route(
             "/v1/labs/provisioning/claim",
             post(claim_provisioning_job_route),

@@ -89,6 +89,38 @@ async def test_hint_reveal_adapter_maps_errors_and_rejects_bad_responses(payload
         assert error.value.status_code == status_code
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload, expected_status", [
+    ({"outcome": "not_found"}, 404),
+    ({"outcome": "not_running", "current_status": "provisioning"}, 409),
+    ({"outcome": "provider_missing"}, 503),
+    ({"outcome": "stale_provider"}, 409),
+    ({"outcome": "not_running", "current_status": "invalid"}, 503),
+    ({"outcome": "stopped", "current_status": "running"}, 503),
+    ({"outcome": "unknown"}, 503),
+])
+async def test_lab_stop_adapter_validates_outcomes(payload, expected_status):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value=payload)):
+        with pytest.raises(HTTPException) as error:
+            await rust_engine.finalize_lab_stop_in_rust(
+                str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, "owned-ref",
+            )
+        assert error.value.status_code == expected_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["stopped", "already_stopped"])
+async def test_lab_stop_adapter_accepts_confirmed_outcomes(outcome):
+    with patch.object(
+        rust_engine, "_post", new=AsyncMock(return_value={
+            "outcome": outcome, "current_status": None,
+        }),
+    ):
+        await rust_engine.finalize_lab_stop_in_rust(
+            str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, "owned-ref",
+        )
+
+
 async def _seed_user_and_challenge(factory):
     async with factory() as db:
         user = User(
