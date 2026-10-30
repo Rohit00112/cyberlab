@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from app.infrastructure import docker as docker_module
+from app.infrastructure.base import LabProviderError
 from app.infrastructure.docker import create_and_start_container
 
 
@@ -61,3 +65,42 @@ async def test_container_create_honours_explicit_limits(monkeypatch):
     assert host_config["NanoCpus"] == 500_000_000
     assert host_config["Memory"] == 128 * 1024 * 1024
     assert host_config["PidsLimit"] == 64
+
+
+async def test_docker_networks_are_internal_only(monkeypatch):
+    requests = []
+
+    async def fake_request(method, path, body=None):
+        requests.append((method, path, body))
+        if method == "GET":
+            return 404, b""
+        return 201, b"{}"
+
+    monkeypatch.setattr(docker_module, "_request", fake_request)
+    await docker_module.ensure_network("cyberlab-1234abcd")
+    assert requests[-1][2] == {
+        "Name": "cyberlab-1234abcd", "Driver": "bridge",
+        "Internal": True, "CheckDuplicate": True,
+    }
+
+    async def external_network(method, path, body=None):
+        return 200, b'{"Internal":false}'
+
+    monkeypatch.setattr(docker_module, "_request", external_network)
+    with pytest.raises(LabProviderError, match="not internal"):
+        await docker_module.ensure_network("cyberlab-1234abcd")
+
+
+def test_production_socket_does_not_fallback_to_unrestricted_host(monkeypatch):
+    monkeypatch.setattr(
+        docker_module, "get_settings",
+        lambda: SimpleNamespace(
+            lab_docker_socket="/run/cyberlab-docker-control/docker.sock",
+            is_production=True,
+        ),
+    )
+    monkeypatch.setattr(docker_module.os.path, "exists", lambda _: False)
+    assert (
+        docker_module._get_docker_socket()
+        == "/run/cyberlab-docker-control/docker.sock"
+    )

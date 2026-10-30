@@ -47,6 +47,10 @@ def _parse_response(raw: bytes) -> tuple[int, bytes]:
 def _get_docker_socket() -> str:
     settings = get_settings()
     socket_path = settings.lab_docker_socket
+    # Production must use its explicitly configured narrow controller socket.
+    # Never opportunistically bypass the controller through a host fallback.
+    if settings.is_production:
+        return socket_path
     if not os.path.exists(socket_path):
         mac_socket = os.path.expanduser("~/.docker/run/docker.sock")
         if os.path.exists(mac_socket):
@@ -102,9 +106,21 @@ async def docker_ping() -> bool:
 async def ensure_network(name: str) -> None:
     status, body = await _request("GET", f"/v1.24/networks/{name}")
     if status == 200:
+        try:
+            internal = json.loads(body).get("Internal") is True
+        except (TypeError, ValueError, AttributeError):
+            internal = False
+        if not internal:
+            raise DockerError(
+                f"Docker network {name!r} is not internal; "
+                "refusing to attach an untrusted challenge environment"
+            )
         return
+    if status != 404:
+        raise DockerError(f"Docker network lookup failed: status {status}")
     status, _ = await _request(
-        "POST", "/v1.24/networks/create", {"Name": name, "Driver": "bridge"}
+        "POST", "/v1.24/networks/create",
+        {"Name": name, "Driver": "bridge", "Internal": True, "CheckDuplicate": True},
     )
     if status not in (201, 409):
         raise DockerError(f"failed to create network {name}: status {status}")
