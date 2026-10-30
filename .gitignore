@@ -17,6 +17,7 @@ venv/
 out/
 dist/
 build/
+apps/security-core/target/
 *.egg-info/
 
 # Tests / coverage
