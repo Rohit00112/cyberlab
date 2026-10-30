@@ -7,12 +7,13 @@ competition's challenges, participants and time window.
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.competition_transitions import (
     TRANSITIONS,
@@ -197,17 +198,9 @@ async def transition(
         if competition is None:
             raise HTTPException(status_code=404, detail="Competition not found")
         if to_status == "finished":
-            from app.services.badges import grant_eligible_badges
-
-            participant_ids = (
-                await db.scalars(
-                    select(CompetitionParticipant.user_id).where(
-                        CompetitionParticipant.competition_id == competition_id
-                    )
-                )
-            ).all()
-            for participant_id in participant_ids:
-                await grant_eligible_badges(db, participant_id, request=request)
+            await _reconcile_finished_badge_events(
+                db, target_slug=competition.slug, request=request
+            )
             await db.refresh(competition)
         return await _to_out(db, competition, user=user)
     now = datetime.now(UTC)
@@ -873,22 +866,29 @@ async def auto_transition_competitions(db: AsyncSession) -> int:
     return changed
 
 
-async def _reconcile_finished_badge_events(db: AsyncSession) -> None:
-    """Retry finish-time badge processing until a durable audit acknowledgement.
+async def _reconcile_finished_badge_events(
+    db: AsyncSession, *, target_slug: str | None = None, request: Request | None = None
+) -> None:
+    """Claim each finish event before badge grants and acknowledge only on success.
 
-    Badge grants are idempotent on sequential retries; an acknowledgement is
-    appended only after every participant has been processed successfully.
+    A separate connection holds a transaction-scoped advisory lock while badge
+    helpers commit on ``db``. Locks release on worker death; other workers skip
+    in-flight events and recheck the acknowledgement after obtaining the lock.
     """
     from app.services.badges import grant_eligible_badges
 
+    bind = db.bind
+    if not isinstance(bind, AsyncEngine):
+        raise RuntimeError("Badge reconciliation requires an async database engine")
+    conditions = [
+        AuditLog.event.in_(("competition.auto_transition", "competition.transition")),
+        AuditLog.details["to"].as_string() == "finished",
+    ]
+    if target_slug is not None:
+        conditions.append(AuditLog.target_id == target_slug)
     finish_events = (
         await db.scalars(
-            select(AuditLog).where(
-                AuditLog.event.in_(
-                    ("competition.auto_transition", "competition.transition")
-                ),
-                AuditLog.details["to"].as_string() == "finished",
-            )
+            select(AuditLog).where(*conditions).order_by(AuditLog.id)
         )
     ).all()
     if not finish_events:
@@ -901,6 +901,9 @@ async def _reconcile_finished_badge_events(db: AsyncSession) -> None:
         )
         for event in finish_events
     ]
+    # Avoid opening a new lock transaction for already-completed events. This
+    # snapshot is only an optimization: a second acknowledgement check under
+    # the per-event lock remains authoritative for concurrent workers.
     acknowledged_rows = (
         await db.scalars(
             select(AuditLog.details).where(
@@ -908,43 +911,67 @@ async def _reconcile_finished_badge_events(db: AsyncSession) -> None:
             )
         )
     ).all()
-    acknowledged = {
+    previously_acknowledged = {
         details.get("transition_event_id")
         for details in acknowledged_rows
         if isinstance(details, dict)
     }
     for transition_id, target_slug, details in event_data:
-        if transition_id in acknowledged:
+        if transition_id in previously_acknowledged:
             continue
-        competition_id = details.get("competition_id")
-        competition = None
-        if isinstance(competition_id, str):
-            try:
-                competition = await db.get(Competition, uuid.UUID(competition_id))
-            except ValueError:
-                pass
-        if competition is None:
-            competition = await db.scalar(
-                select(Competition).where(Competition.slug == target_slug)
-            )
-        if competition is not None:
-            if competition.slug != target_slug:
-                raise RuntimeError("Competition finish audit points to a mismatched slug")
-            participant_ids = (
-                await db.scalars(
-                    select(CompetitionParticipant.user_id).where(
-                        CompetitionParticipant.competition_id == competition.id
-                    )
-                )
-            ).all()
-            for participant_id in participant_ids:
-                await grant_eligible_badges(db, participant_id)
-        await record_audit(
-            db,
-            event="competition.badges_reconciled",
-            target_id=target_slug,
-            details={"transition_event_id": transition_id},
+        lock_key = int.from_bytes(
+            hashlib.blake2b(
+                f"cyberlab:competition:badges:{transition_id}".encode(),
+                digest_size=8,
+            ).digest(),
+            byteorder="big",
+            signed=True,
         )
+        async with bind.begin() as claim:
+            claimed = await claim.scalar(
+                text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": lock_key}
+            )
+            if not claimed:
+                continue
+            acknowledgment_id = await claim.scalar(
+                select(AuditLog.id).where(
+                    AuditLog.event == "competition.badges_reconciled",
+                    AuditLog.details["transition_event_id"].as_string()
+                    == transition_id,
+                ).limit(1)
+            )
+            if acknowledgment_id is not None:
+                continue
+            competition_id = details.get("competition_id")
+            competition = None
+            if isinstance(competition_id, str):
+                try:
+                    competition = await db.get(Competition, uuid.UUID(competition_id))
+                except ValueError:
+                    pass
+            if competition is None:
+                competition = await db.scalar(
+                    select(Competition).where(Competition.slug == target_slug)
+                )
+            if competition is not None:
+                if competition.slug != target_slug:
+                    raise RuntimeError("Competition finish audit points to a mismatched slug")
+                participant_ids = (
+                    await db.scalars(
+                        select(CompetitionParticipant.user_id).where(
+                            CompetitionParticipant.competition_id == competition.id
+                        )
+                    )
+                ).all()
+                for participant_id in participant_ids:
+                    await grant_eligible_badges(db, participant_id, request=request)
+            await record_audit(
+                db,
+                event="competition.badges_reconciled",
+                target_id=target_slug,
+                details={"transition_event_id": transition_id},
+                request=request,
+            )
 
 
 async def competition_analytics(

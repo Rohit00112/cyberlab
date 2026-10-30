@@ -2083,6 +2083,10 @@ async def test_rust_manual_competition_transitions_are_atomic_and_api_compatible
             assert finish_audit.details == {
                 "action": "finish", "from": "live", "to": "finished",
             }
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "competition.badges_reconciled",
+                AuditLog.target_id == "manual-live",
+            )) == 1
 
         async with httpx.AsyncClient(timeout=2) as client:
             assert (await client.post(
@@ -2177,6 +2181,65 @@ async def test_rust_manual_competition_transitions_are_atomic_and_api_compatible
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_concurrent_competition_finish_badge_claims(
+    live_rust_database, monkeypatch
+):
+    """Only one worker may reconcile a given finish event at a time."""
+    ctx = live_rust_database
+    organizer_id, _, _, _, _ = ctx.seeded
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def slow_badge_grant(db, user_id, request=None):
+        calls.append(user_id)
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        "app.services.badges.grant_eligible_badges", slow_badge_grant
+    )
+    async with ctx.factory() as db:
+        comp = Competition(
+            slug="badge-claim-race", title="Concurrent badge claim",
+            status="finished", created_by=organizer_id,
+        )
+        db.add(comp)
+        await db.flush()
+        db.add_all([
+            CompetitionParticipant(competition_id=comp.id, user_id=organizer_id),
+            AuditLog(
+                event="competition.transition", target_id=comp.slug,
+                details={"action": "finish", "from": "live", "to": "finished"},
+            ),
+        ])
+        await db.commit()
+
+    async def reconcile():
+        async with ctx.factory() as db:
+            await competitions._reconcile_finished_badge_events(
+                db, target_slug="badge-claim-race"
+            )
+
+    first = asyncio.create_task(reconcile())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        # The first grant remains in progress while the second worker tries.
+        await asyncio.wait_for(reconcile(), timeout=5)
+        assert calls == [organizer_id]
+    finally:
+        release.set()
+        await first
+
+    async with ctx.factory() as db:
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.badges_reconciled",
+            AuditLog.target_id == "badge-claim-race",
+        )) == 1
+    await reconcile()
+    assert calls == [organizer_id]
 
 
 async def test_rust_auto_transitions_audit_and_retry_badge_followups(
