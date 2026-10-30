@@ -22,6 +22,7 @@ from app.infrastructure import docker as docker_adapter
 from app.infrastructure.base import LabProvider, LabProviderError
 from app.infrastructure.docker import DockerError
 from app.infrastructure.factory import get_lab_provider
+from app.models.audit_logs import AuditLog
 from app.models.challenges import Challenge
 from app.models.labs import LabInstance
 from app.models.machine_templates import MachineTemplateVersion
@@ -329,23 +330,30 @@ async def stop_lab(
     if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
+    if lab.status == "running" and not ref:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lab provider reference is missing",
+        )
     if lab.status in (LabState.RUNNING.value, "running") and ref:
         try:
             lab.status = (await transition_lab(lab.status, LabState.STOPPING)).value
-            await db.commit()
             await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError) as exc:
+            await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-            ) from None
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to stop lab environment",
+            ) from exc
     try:
         lab.status = (await transition_lab(lab.status, LabState.STOPPED)).value
     except Exception:
         lab.status = "stopped"
+    db.add(AuditLog(
+        event="lab.stop", user_id=user.id, target_id=str(lab.id),
+        ip_address=request.client.host if request and request.client else None,
+    ))
     await db.commit()
-    await record_audit(
-        db, event="lab.stop", user_id=user.id, target_id=str(lab.id), request=request
-    )
     return await _to_out(db, lab)
 
 
@@ -486,16 +494,25 @@ async def expire_lab(
     if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     ref = lab.provider_ref or lab.container_id
+    if lab.status == "running" and not ref:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lab provider reference is missing",
+        )
     if lab.status == "running" and ref:
         try:
             await _lab_provider_for(lab).stop_lab(ref)
-        except (DockerError, LabProviderError):
-            pass
+        except (DockerError, LabProviderError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to stop lab environment",
+            ) from exc
     lab.status = "expired"
+    db.add(AuditLog(
+        event="lab.expire", user_id=user.id, target_id=str(lab.id),
+        ip_address=request.client.host if request and request.client else None,
+    ))
     await db.commit()
-    await record_audit(
-        db, event="lab.expire", user_id=user.id, target_id=str(lab.id), request=request
-    )
     return await _to_out(db, lab)
 
 
@@ -518,12 +535,20 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             and now > lab.expires_at.replace(tzinfo=UTC)
         ):
             ref = lab.provider_ref or lab.container_id
-            if ref:
-                try:
-                    await _lab_provider_for(lab).stop_lab(ref)
-                except (DockerError, LabProviderError):
-                    pass
+            if not ref:
+                # A running environment without a provider handle cannot be
+                # proven stopped. Keep it visible for operator recovery.
+                continue
+            try:
+                await _lab_provider_for(lab).stop_lab(ref)
+            except (DockerError, LabProviderError):
+                # Never claim a remote environment has expired when its
+                # provider refused to stop it. Retry on the next sweep.
+                continue
             lab.status = "expired"
+            db.add(AuditLog(
+                event="lab.expire_auto", user_id=lab.user_id, target_id=str(lab.id),
+            ))
             changed += 1
         elif lab.status == "provisioning" and lab.created_at:
             if now - lab.created_at.replace(tzinfo=UTC) > timedelta(
@@ -531,6 +556,10 @@ async def expire_stale_labs(db: AsyncSession) -> int:
             ):
                 lab.status = "error"
                 lab.error_message = "Provisioning timed out."
+                db.add(AuditLog(
+                    event="lab.provisioning_timeout", user_id=lab.user_id,
+                    target_id=str(lab.id),
+                ))
                 changed += 1
     if changed:
         await db.commit()
@@ -629,23 +658,28 @@ async def admin_terminate_lab(
     request: Request | None = None,
 ) -> LabAdminOut:
     ref = lab.provider_ref or lab.container_id
+    if lab.status == "running" and not ref:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lab provider reference is missing",
+        )
     if ref:
         provider = _lab_provider_for(lab)
         try:
             await provider.stop_lab(ref)
             await provider.remove_lab(ref)
-        except (DockerError, LabProviderError):
-            pass
+        except (DockerError, LabProviderError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to terminate lab environment",
+            ) from exc
     lab.status = "expired"
+    db.add(AuditLog(
+        event="lab.terminate", user_id=admin_user.id, target_id=str(lab.id),
+        ip_address=request.client.host if request and request.client else None,
+    ))
     await db.commit()
     await db.refresh(lab)
-    await record_audit(
-        db,
-        event="lab.terminate",
-        user_id=admin_user.id,
-        target_id=str(lab.id),
-        request=request,
-    )
     u = (await _users_map(db, [lab.user_id])).get(str(lab.user_id))
     challenge = await db.get(Challenge, lab.challenge_id)
     return LabAdminOut(

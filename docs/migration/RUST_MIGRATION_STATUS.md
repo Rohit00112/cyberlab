@@ -2,6 +2,8 @@
 
 ## Current delivery
 
+October 30 lab shutdown/maintenance hardening: Automatic expiry no longer reports an overdue running lab as expired when its provider refuses to stop the environment; the next sweep can retry. An automatic expiry or provisioning-timeout status change now commits together with its own audit event. User stop, expiry and administrator termination now return HTTP 503 on provider shutdown errors instead of masking reachable environments or persisting a stranded `stopping` state, and successful status/audit writes share one database transaction. Isolated backend tests cover fail-closed provider errors and maintenance audits. This improves control-plane truthfulness, but does not itself enforce host network isolation, recover stranded external resources, or migrate shutdown persistence into Rust.
+
 The existing IIC CyberLab project remains in `/cyberlab`. A new internal Rust service lives in `apps/security-core`, with a narrowly scoped Axum API:
 
 - `GET /health`

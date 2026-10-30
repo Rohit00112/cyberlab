@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
-from app.models import Challenge, LabInstance, User
+from app.infrastructure.docker import DockerError
+from app.models import AuditLog, Challenge, LabInstance, User
 from app.services.labs import expire_stale_labs
 
 
@@ -67,6 +68,7 @@ async def test_sweep_expires_overdue_running_lab(test_db, monkeypatch):
     async with test_db() as db:
         lab = (await db.scalars(select(LabInstance))).one()
         assert lab.status == "expired"
+        assert (await db.scalars(select(AuditLog.event))).all() == ["lab.expire_auto"]
 
 
 async def test_sweep_flags_provisioning_stuck_lab(test_db, monkeypatch):
@@ -87,6 +89,41 @@ async def test_sweep_flags_provisioning_stuck_lab(test_db, monkeypatch):
         lab = (await db.scalars(select(LabInstance))).one()
         assert lab.status == "error"
         assert lab.error_message == "Provisioning timed out."
+        assert (await db.scalars(select(AuditLog.event))).all() == [
+            "lab.provisioning_timeout",
+        ]
+
+
+async def test_sweep_does_not_hide_unstopped_running_lab(test_db, monkeypatch):
+    user_id, challenge_id = await _seed_user_and_challenge(test_db)
+    lab = await _add_lab(
+        test_db, user_id, challenge_id,
+        status="running", container_id="unreachable-provider",
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    async def stop_fails(_ref: str) -> None:
+        raise DockerError("cannot stop the environment")
+
+    monkeypatch.setattr("app.services.labs.docker_adapter.stop_container", stop_fails)
+    async with test_db() as db:
+        assert await expire_stale_labs(db) == 0
+    async with test_db() as db:
+        assert (await db.get(LabInstance, lab.id)).status == "running"
+        assert (await db.scalars(select(AuditLog.event))).all() == []
+
+
+async def test_sweep_cannot_expire_running_lab_without_provider_handle(test_db):
+    user_id, challenge_id = await _seed_user_and_challenge(test_db)
+    lab = await _add_lab(
+        test_db, user_id, challenge_id,
+        status="running", expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    async with test_db() as db:
+        assert await expire_stale_labs(db) == 0
+    async with test_db() as db:
+        assert (await db.get(LabInstance, lab.id)).status == "running"
+        assert (await db.scalars(select(AuditLog.event))).all() == []
 
 
 async def test_sweep_leaves_active_lab_untouched(test_db, monkeypatch):

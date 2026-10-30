@@ -319,6 +319,51 @@ async def test_expire_flow(test_db):
     app.dependency_overrides.clear()
 
 
+async def test_expire_and_admin_terminate_fail_closed_on_provider_failure(
+    test_db, monkeypatch
+):
+    owner = _student(sub=f"lab-provider-fail-{uuid.uuid4().hex[:6]}")
+    admin = _other_user(
+        sub=f"lab-admin-fail-{uuid.uuid4().hex[:6]}", roles=["sysadmin"]
+    )
+    await _ensure_user(test_db, owner)
+    await _ensure_user(test_db, admin)
+    challenge = await _seed_challenge(
+        test_db, slug=f"_lefail_{uuid.uuid4().hex[:6]}"
+    )
+    async with _make_client(test_db, owner) as client:
+        lab = (await client.post(
+            f"/api/v1/challenges/{challenge.id}/lab/launch"
+        )).json()
+    app.dependency_overrides.clear()
+
+    async def unavailable(_ref: str) -> None:
+        raise DockerError("provider unreachable")
+
+    monkeypatch.setattr(docker_module, "stop_container", unavailable)
+    async with _make_client(test_db, owner) as client:
+        response = await client.post(f"/api/v1/labs/{lab['id']}/stop")
+        assert response.status_code == 503
+        response = await client.post(f"/api/v1/labs/{lab['id']}/expire")
+        assert response.status_code == 503
+    app.dependency_overrides.clear()
+
+    async with _make_client(test_db, admin) as client:
+        response = await client.post(
+            f"/api/v1/admin/labs/{lab['id']}/terminate"
+        )
+        assert response.status_code == 503
+    app.dependency_overrides.clear()
+
+    async with test_db() as db:
+        assert (await db.get(LabInstance, uuid.UUID(lab["id"]))).status == "running"
+        assert not (await db.scalars(
+            select(AuditLog).where(
+                AuditLog.event.in_(["lab.stop", "lab.expire", "lab.terminate"])
+            )
+        )).all()
+
+
 async def test_cannot_manage_someone_elses_lab(test_db):
     owner = _student(sub=f"lab-owner-{uuid.uuid4().hex[:6]}")
     other = _other_user(sub=f"lab-other-{uuid.uuid4().hex[:6]}", roles=["student"])
