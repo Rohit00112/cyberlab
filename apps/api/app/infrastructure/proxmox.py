@@ -49,6 +49,8 @@ class ProxmoxLabProvider(LabProvider):
             raise ProxmoxError("Invalid Proxmox node name")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}", self.bridge):
             raise ProxmoxError("Invalid Proxmox bridge name")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", self.storage):
+            raise ProxmoxError("Invalid Proxmox storage identifier")
         self.verify_ssl = settings.proxmox_verify_ssl
         if settings.is_production and not self.verify_ssl:
             raise ProxmoxError("Proxmox TLS certificate verification is required in production")
@@ -206,6 +208,42 @@ class ProxmoxLabProvider(LabProvider):
                 "configure it before provisioning"
             ) from exc
 
+    async def _verify_clone_prerequisites(self, template_vmid: str) -> None:
+        """Reject unsuitable templates/storage before allocating any VM.
+
+        Proxmox allows an ordinary stopped VM and an ISO-only datastore to be
+        inspected successfully, but neither is a valid source/target for the
+        full-clone workflow used by CyberLab.
+        """
+        inventory = await self._request(
+            "GET", f"/api2/json/nodes/{self.node}/qemu"
+        )
+        if not isinstance(inventory, list):
+            raise ProxmoxError("Cannot verify Proxmox VM template inventory")
+        template = next(
+            (item for item in inventory
+             if isinstance(item, dict) and str(item.get("vmid")) == template_vmid),
+            None,
+        )
+        if template is None or template.get("template") not in (1, "1", True):
+            raise ProxmoxError(
+                f"Proxmox VMID {template_vmid} is not an available VM template"
+            )
+
+        storage = await self._request(
+            "GET",
+            f"/api2/json/nodes/{self.node}/storage/{quote(self.storage, safe='')}/status",
+        )
+        if not isinstance(storage, dict) or storage.get("active") not in (1, "1", True):
+            raise ProxmoxError(f"Proxmox storage {self.storage!r} is not active")
+        contents = storage.get("content", "")
+        if not isinstance(contents, str) or "images" not in {
+            item.strip() for item in contents.split(",")
+        }:
+            raise ProxmoxError(
+                f"Proxmox storage {self.storage!r} cannot hold VM disk images"
+            )
+
     async def create_lab(
         self,
         name: str,
@@ -235,6 +273,7 @@ class ProxmoxLabProvider(LabProvider):
             "GET", "/api2/json/cluster/nextid"
         )
         new_vmid = self._vmid(next_id_data)
+        await self._verify_clone_prerequisites(template_vmid)
 
         # Clone from template; use configured storage for the full clone
         clone_params: dict[str, Any] = {

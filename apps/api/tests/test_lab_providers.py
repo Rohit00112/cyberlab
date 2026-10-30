@@ -533,6 +533,10 @@ class TestProxmoxRequest:
             calls.append((method, path))
             if path == "/api2/json/cluster/nextid":
                 return 135
+            if path == f"/api2/json/nodes/{provider.node}/qemu":
+                return [{"vmid": 900, "template": 1}]
+            if path.endswith(f"/storage/{provider.storage}/status"):
+                return {"active": 1, "content": "images,rootdir"}
             if path.endswith("/900/clone"):
                 return clone
             if "/tasks/" in path:
@@ -549,8 +553,39 @@ class TestProxmoxRequest:
             "135", "192.0.2.30"
         )
         assert [method for method, _ in calls] == [
-            "GET", "POST", "GET", "PUT", "POST", "GET"
+            "GET", "GET", "GET", "POST", "GET", "PUT", "POST", "GET"
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inventory,storage,expected_error", [
+        ([{"vmid": 900}], {"active": 1, "content": "images"}, "VM template"),
+        ([], {"active": 1, "content": "images"}, "VM template"),
+        ([{"vmid": 900, "template": 1}], {"active": 1, "content": "iso,backup"}, "disk images"),
+        ([{"vmid": 900, "template": 1}], {"active": 0, "content": "images"}, "not active"),
+    ])
+    async def test_proxmox_preflight_rejects_unsuitable_clone_resources(
+        self, monkeypatch, inventory, storage, expected_error
+    ):
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path))
+            if path.endswith("/cluster/nextid"):
+                return 135
+            if path == f"/api2/json/nodes/{provider.node}/qemu":
+                return inventory
+            if path.endswith(f"/storage/{provider.storage}/status"):
+                return storage
+            raise AssertionError(f"Unexpected mutating Proxmox request: {method} {path}")
+
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(ProxmoxError, match=expected_error):
+            await provider.create_lab("lab", "900", "per-user-network")
+        assert calls
+        assert all(method == "GET" for method, _ in calls)
 
     @pytest.mark.asyncio
     async def test_proxmox_start_failure_returns_only_verified_ownership(self, monkeypatch):
@@ -562,6 +597,10 @@ class TestProxmoxRequest:
         async def request(method, path, **kwargs):
             if path.endswith("/nextid"):
                 return 135
+            if path == f"/api2/json/nodes/{provider.node}/qemu":
+                return [{"vmid": 900, "template": 1}]
+            if path.endswith(f"/storage/{provider.storage}/status"):
+                return {"active": 1, "content": "images"}
             if path.endswith("/900/clone"):
                 return clone
             if "/tasks/" in path:
@@ -614,6 +653,7 @@ class TestProxmoxRequest:
         ({"environment": "production", "proxmox_user": ""}, "credentials"),
         ({"proxmox_node": "pve/../other"}, "node"),
         ({"proxmox_bridge": "vmbr0,firewall=0"}, "bridge"),
+        ({"proxmox_storage": "../other"}, "storage"),
     ])
     def test_invalid_proxmox_config_fails_before_any_api_call(
         self, monkeypatch, overrides, expected_error

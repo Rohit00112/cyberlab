@@ -134,7 +134,9 @@ class ProxmoxCheck:
                 )
             else:
                 content = {c.strip() for c in storage.get("content", "").split(",")}
-                ok_content = "images" in content or "rootdir" in content
+                # VM full clones require disk-image content; rootdir alone is
+                # usable for LXC containers, not CyberLab QEMU VM disks.
+                ok_content = "images" in content
                 self._serve(
                     "storage", "ok" if ok_content else "fail",
                     f"'{self.storage}' ({storage.get('type')}) content={storage.get('content')}",
