@@ -1,6 +1,7 @@
 """Integration tests for lab lifecycle (Phase 2 Cyber Range, PRD §46-§51)."""
 
 import asyncio
+import subprocess
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.api.deps import CurrentUser, get_current_user
 from app.core import rust_engine
 from app.core.config import get_settings
-from app.core.flags import hash_flag
+from app.core.flags import hash_flag, lab_flag_command
 from app.db.base import Base
 from app.db.session import get_db
 from app.infrastructure import docker as docker_module
@@ -31,6 +32,20 @@ from app.services import labs as lab_service
 SessionFactory = async_sessionmaker[AsyncSession]
 
 CORRECT = "IIC{test-flag}"
+
+
+def test_lab_flag_command_escapes_untrusted_flag_paths(tmp_path, monkeypatch):
+    """Neither quotes in the flag nor shell metacharacters in config may run code."""
+    monkeypatch.chdir(tmp_path)
+    flag = "IIC{value' ; touch compromised ; #}"
+    path = "flag; touch injected"
+    cmd = lab_flag_command(path, flag)
+    assert lab_service._flag_command(path, flag) == cmd
+    cmd[2] = cmd[2].replace("&& sleep infinity", "&& :")
+    subprocess.run(cmd, check=True, timeout=2)
+    assert (tmp_path / path).read_text() == flag + "\n"
+    assert not (tmp_path / "compromised").exists()
+    assert not (tmp_path / "injected").exists()
 
 
 def _student(sub: str) -> CurrentUser:

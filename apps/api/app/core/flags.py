@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import re
 import secrets
+import shlex
 
 DIFFICULTIES = {"beginner", "intermediate", "advanced"}
 STATUSES = {"draft", "published", "archived"}
@@ -42,6 +43,14 @@ def verify_flag(candidate: str, expected_hash: str) -> bool:
 def generate_lab_flag() -> str:
     """Random per-session lab flag (e.g. ``IIC{lab-5f3a...}``)."""
     return f"IIC{{lab-{secrets.token_hex(8)}}}"
+
+
+def lab_flag_command(flag_path: str, flag: str) -> list[str]:
+    """Build a shell-safe container command, including admin-defined flag paths."""
+    return [
+        "/bin/sh", "-c",
+        f"printf '%s\\n' {shlex.quote(flag)} > {shlex.quote(flag_path)} && sleep infinity",
+    ]
 
 
 def slugify(value: str) -> str:

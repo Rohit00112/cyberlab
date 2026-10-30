@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.flags import generate_lab_flag, hash_flag
+from app.core.flags import generate_lab_flag, hash_flag, lab_flag_command
 from app.core.lab_transitions import transition_lab
 from app.core.states import LabState
 from app.db.base import SessionLocal
@@ -85,7 +85,7 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             await db.commit()
 
             flag = generate_lab_flag()
-            cmd = ["/bin/sh", "-c", f"printf '%s\\n' '{flag}' > {flag_path} && sleep infinity"]
+            cmd = lab_flag_command(flag_path, flag)
             container_name = lab.container_name or f"lab-{str(lab.user_id)[:8]}-{str(lab.id)[:8]}"
 
             provider_ref, ip = await provider.create_lab(

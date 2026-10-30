@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import get_settings
-from app.infrastructure.base import LabProvider
+from app.infrastructure.base import LabProvider, LabProviderError
 
 
 def _resolve_provider(provider_name: str) -> LabProvider:
@@ -24,9 +24,11 @@ def _resolve_provider(provider_name: str) -> LabProvider:
         from app.infrastructure.libvirt_provider import LibvirtLabProvider
 
         return LibvirtLabProvider()
-    from app.infrastructure.docker import DockerLabProvider
+    if provider_name == "docker":
+        from app.infrastructure.docker import DockerLabProvider
 
-    return DockerLabProvider()
+        return DockerLabProvider()
+    raise LabProviderError(f"Unsupported lab provider: {provider_name!r}")
 
 
 @lru_cache

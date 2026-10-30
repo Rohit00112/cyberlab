@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
-from app.core.flags import generate_lab_flag, hash_flag
+from app.core.flags import generate_lab_flag, hash_flag, lab_flag_command
 from app.core.lab_transitions import transition_lab
 from app.core.states import ACTIVE_STATES, LabState
 from app.infrastructure import docker as docker_adapter
@@ -76,7 +76,7 @@ def _container_name(lab: LabInstance) -> str:
 
 def _flag_command(flag_path: str, flag: str) -> list[str]:
     """Shell command that writes the per-session flag into the container then parks it."""
-    return ["/bin/sh", "-c", f"printf '%s\\n' '{flag}' > {flag_path} && sleep infinity"]
+    return lab_flag_command(flag_path, flag)
 
 
 async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:

@@ -138,6 +138,15 @@ class TestProviderFactory:
             assert isinstance(get_lab_provider("fake"), FakeLabProvider)
         get_lab_provider.cache_clear()
 
+    def test_unknown_provider_fails_closed(self):
+        from app.infrastructure.base import LabProviderError
+        from app.infrastructure.factory import get_lab_provider
+
+        get_lab_provider.cache_clear()
+        with pytest.raises(LabProviderError, match="Unsupported lab provider"):
+            get_lab_provider("unconfigured-provider")
+        get_lab_provider.cache_clear()
+
 
 def test_lab_lifecycle_uses_labs_recorded_provider(monkeypatch):
     """Lifecycle ops must target the provider recorded on the lab, so a lab
