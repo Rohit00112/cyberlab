@@ -315,6 +315,18 @@ async def persist_competition_transition_in_rust(
     return transitions[action][1]
 
 
+async def auto_transition_competitions_in_rust() -> int:
+    result = await _post("/v1/competitions/transition/auto", {})
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="Invalid Rust scheduler response")
+    changed = result.get("changed")
+    # Each phase processes at most 250 rows, including events that cross two
+    # lifecycle states in one sweep.
+    if type(changed) is not int or not 0 <= changed <= 500:
+        raise HTTPException(status_code=503, detail="Invalid Rust scheduler response")
+    return changed
+
+
 async def publish_challenge_in_rust(
     challenge_id: str, actor_id: str, roles: list[str], ip_address: str | None
 ) -> int:

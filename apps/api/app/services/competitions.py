@@ -19,6 +19,7 @@ from app.core.competition_transitions import (
     decide_competition_transition,
 )
 from app.core.config import get_settings
+from app.models.audit_logs import AuditLog
 from app.models.challenges import Challenge
 from app.models.competitions import (
     Competition,
@@ -811,6 +812,17 @@ async def auto_transition_competitions(db: AsyncSession) -> int:
     Returns the number of competitions whose status changed.
     Called by the background maintenance loop (Track 3).
     """
+    if get_settings().rust_core_url:
+        from app.core.rust_engine import auto_transition_competitions_in_rust
+
+        await db.rollback()
+        changed = await auto_transition_competitions_in_rust()
+        # The Rust status/audit transaction may have committed before a worker
+        # crashed or lost its HTTP response. Reconcile every unacknowledged
+        # finish event on each sweep, including older manual finish events.
+        await _reconcile_finished_badge_events(db)
+        return changed
+
     now = datetime.now(UTC)
     changed = 0
 
@@ -859,6 +871,80 @@ async def auto_transition_competitions(db: AsyncSession) -> int:
     if changed:
         await db.commit()
     return changed
+
+
+async def _reconcile_finished_badge_events(db: AsyncSession) -> None:
+    """Retry finish-time badge processing until a durable audit acknowledgement.
+
+    Badge grants are idempotent on sequential retries; an acknowledgement is
+    appended only after every participant has been processed successfully.
+    """
+    from app.services.badges import grant_eligible_badges
+
+    finish_events = (
+        await db.scalars(
+            select(AuditLog).where(
+                AuditLog.event.in_(
+                    ("competition.auto_transition", "competition.transition")
+                ),
+                AuditLog.details["to"].as_string() == "finished",
+            )
+        )
+    ).all()
+    if not finish_events:
+        return
+    event_data = [
+        (
+            str(event.id),
+            event.target_id,
+            event.details if isinstance(event.details, dict) else {},
+        )
+        for event in finish_events
+    ]
+    acknowledged_rows = (
+        await db.scalars(
+            select(AuditLog.details).where(
+                AuditLog.event == "competition.badges_reconciled"
+            )
+        )
+    ).all()
+    acknowledged = {
+        details.get("transition_event_id")
+        for details in acknowledged_rows
+        if isinstance(details, dict)
+    }
+    for transition_id, target_slug, details in event_data:
+        if transition_id in acknowledged:
+            continue
+        competition_id = details.get("competition_id")
+        competition = None
+        if isinstance(competition_id, str):
+            try:
+                competition = await db.get(Competition, uuid.UUID(competition_id))
+            except ValueError:
+                pass
+        if competition is None:
+            competition = await db.scalar(
+                select(Competition).where(Competition.slug == target_slug)
+            )
+        if competition is not None:
+            if competition.slug != target_slug:
+                raise RuntimeError("Competition finish audit points to a mismatched slug")
+            participant_ids = (
+                await db.scalars(
+                    select(CompetitionParticipant.user_id).where(
+                        CompetitionParticipant.competition_id == competition.id
+                    )
+                )
+            ).all()
+            for participant_id in participant_ids:
+                await grant_eligible_badges(db, participant_id)
+        await record_audit(
+            db,
+            event="competition.badges_reconciled",
+            target_id=target_slug,
+            details={"transition_event_id": transition_id},
+        )
 
 
 async def competition_analytics(

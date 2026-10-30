@@ -14,6 +14,9 @@ use cyberlab_security_core::catalog::{query_catalog, CatalogError, CatalogPage, 
 use cyberlab_security_core::competition::{
     transition_competition, CompetitionTransitionRequest, CompetitionTransitionResponse,
 };
+use cyberlab_security_core::competition_auto::{
+    persist_due as persist_due_competitions, AutoTransitionResponse,
+};
 use cyberlab_security_core::competition_freeze::{
     set_frozen, CompetitionFreezeRequest, CompetitionFreezeResponse,
 };
@@ -520,6 +523,23 @@ async fn persist_competition_transition_route(
     }
 }
 
+async fn auto_competition_transitions_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AutoTransitionResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    persist_due_competitions(pool)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token =
@@ -594,6 +614,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/competitions/transition/persist",
             post(persist_competition_transition_route),
+        )
+        .route(
+            "/v1/competitions/transition/auto",
+            post(auto_competition_transitions_route),
         )
         .route("/v1/catalog/query", post(challenge_catalog))
         .route("/v1/leaderboard", post(leaderboard))

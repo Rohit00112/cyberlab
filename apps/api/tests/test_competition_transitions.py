@@ -385,3 +385,22 @@ async def test_rust_persistent_transition_outcomes_are_validated(
             str(uuid.uuid4()), action, str(uuid.uuid4()), ["faculty"], None
         )
     assert exc.value.status_code == http_status
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"changed": -1},
+        {"changed": True},
+        {"changed": 501},
+        {"changed": 0.5},
+        {"changed": "1"},
+        {"outcome": "unexpected"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_rust_scheduler_response_fails_closed(monkeypatch, result):
+    monkeypatch.setattr(rust_engine, "_post", AsyncMock(return_value=result))
+    with pytest.raises(HTTPException) as exc:
+        await rust_engine.auto_transition_competitions_in_rust()
+    assert exc.value.status_code == 503

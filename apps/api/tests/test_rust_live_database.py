@@ -2177,3 +2177,229 @@ async def test_rust_manual_competition_transitions_are_atomic_and_api_compatible
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)
+
+
+async def test_rust_auto_transitions_audit_and_retry_badge_followups(
+    live_rust_database, monkeypatch
+):
+    ctx = live_rust_database
+    organizer_id, other_id, _, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(competitions, "get_settings", lambda: settings)
+    badge_hook = AsyncMock()
+    monkeypatch.setattr("app.services.badges.grant_eligible_badges", badge_hook)
+    now = datetime.now(UTC)
+    async with ctx.factory() as db:
+        opening = Competition(
+            slug="auto-opening", title="Starting now", status="scheduled",
+            start_at=now - timedelta(minutes=1),
+            end_at=now + timedelta(hours=1), created_by=organizer_id,
+        )
+        ending = Competition(
+            slug="auto-ending", title="Ending now", status="live",
+            end_at=now - timedelta(minutes=1), created_by=organizer_id,
+        )
+        overdue = Competition(
+            slug="auto-overdue", title="Start and finish", status="scheduled",
+            start_at=now - timedelta(hours=2),
+            end_at=now - timedelta(hours=1), created_by=organizer_id,
+        )
+        future = Competition(
+            slug="auto-future", title="Not yet due", status="scheduled",
+            start_at=now + timedelta(hours=1),
+            end_at=now + timedelta(hours=2), created_by=organizer_id,
+        )
+        manual_done = Competition(
+            slug="manual-finish-pending", title="Manual retry",
+            status="finished", created_by=organizer_id,
+        )
+        db.add_all([opening, ending, overdue, future, manual_done])
+        await db.flush()
+        db.add_all([
+            CompetitionParticipant(competition_id=ending.id, user_id=organizer_id),
+            CompetitionParticipant(competition_id=ending.id, user_id=other_id),
+            CompetitionParticipant(competition_id=overdue.id, user_id=organizer_id),
+            CompetitionParticipant(competition_id=manual_done.id, user_id=other_id),
+            AuditLog(
+                event="competition.transition",
+                target_id="manual-finish-pending",
+                user_id=organizer_id,
+                details={"action": "finish", "from": "live", "to": "finished"},
+            ),
+        ])
+        await db.commit()
+        opening_id, ending_id, overdue_id, future_id = (
+            opening.id, ending.id, overdue.id, future.id,
+        )
+    internal = f"{ctx.rust_url}/v1/competitions/transition/auto"
+
+    async with httpx.AsyncClient(timeout=2) as client:
+        no_token = await client.post(internal, json={})
+        assert no_token.status_code == 401
+    async with ctx.factory() as db:
+        changed = await competitions.auto_transition_competitions(db)
+        assert changed == 4
+        assert badge_hook.await_count == 4
+    async with ctx.factory() as db:
+        assert (await db.get(Competition, opening_id)).status == "live"
+        assert (await db.get(Competition, ending_id)).status == "finished"
+        assert (await db.get(Competition, overdue_id)).status == "finished"
+        assert (await db.get(Competition, future_id)).status == "scheduled"
+        audits = (await db.scalars(select(AuditLog).where(
+            AuditLog.event == "competition.auto_transition"
+        ))).all()
+        assert len(audits) == 4
+        assert all(a.user_id is None for a in audits)
+        assert {
+            (a.target_id, a.details["from"], a.details["to"]) for a in audits
+        } == {
+            ("auto-opening", "scheduled", "live"),
+            ("auto-ending", "live", "finished"),
+            ("auto-overdue", "scheduled", "live"),
+            ("auto-overdue", "live", "finished"),
+        }
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.badges_reconciled"
+        )) == 3
+    async with ctx.factory() as db:
+        assert await competitions.auto_transition_competitions(db) == 0
+        assert badge_hook.await_count == 4
+
+    # Two concurrent Rust sweeps must transition a due row only once.
+    async with ctx.factory() as db:
+        racing = Competition(
+            slug="auto-racing", title="Concurrent scheduler",
+            status="scheduled", start_at=now - timedelta(minutes=1),
+            end_at=now + timedelta(hours=1), created_by=organizer_id,
+        )
+        db.add(racing)
+        await db.commit()
+        racing_id = racing.id
+    async with httpx.AsyncClient(timeout=5) as client:
+        async def sweep():
+            return await client.post(
+                internal, json={},
+                headers={"x-internal-token": ctx.token},
+            )
+
+        first, second = await asyncio.gather(sweep(), sweep())
+        assert first.status_code == second.status_code == 200
+        assert first.json()["changed"] + second.json()["changed"] == 1
+    async with ctx.factory() as db:
+        assert (await db.get(Competition, racing_id)).status == "live"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.auto_transition",
+            AuditLog.target_id == "auto-racing",
+        )) == 1
+
+    # The Rust transition commits before Python awards badges. A failing
+    # callback must leave an unacknowledged finish event for the next sweep.
+    async with ctx.factory() as db:
+        retry_comp = Competition(
+            slug="auto-retry", title="Retry badges", status="live",
+            end_at=now - timedelta(minutes=1), created_by=organizer_id,
+        )
+        db.add(retry_comp)
+        await db.flush()
+        db.add(CompetitionParticipant(
+            competition_id=retry_comp.id, user_id=organizer_id,
+        ))
+        await db.commit()
+        retry_id = retry_comp.id
+    badge_hook.side_effect = RuntimeError("simulated badge delivery failure")
+    async with ctx.factory() as db:
+        with pytest.raises(RuntimeError, match="simulated badge"):
+            await competitions.auto_transition_competitions(db)
+        await db.rollback()
+    async with ctx.factory() as db:
+        assert (await db.get(Competition, retry_id)).status == "finished"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.auto_transition",
+            AuditLog.target_id == "auto-retry",
+        )) == 1
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.badges_reconciled"
+        )) == 3
+    badge_hook.side_effect = None
+    before_retry = badge_hook.await_count
+    async with ctx.factory() as db:
+        assert await competitions.auto_transition_competitions(db) == 0
+    assert badge_hook.await_count == before_retry + 1
+    async with ctx.factory() as db:
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.badges_reconciled"
+        )) == 4
+        assert await competitions.auto_transition_competitions(db) == 0
+        assert badge_hook.await_count == before_retry + 1
+
+    # Verify selected SQL on a disposable NOLOGIN role without persisting
+    # grants, including SKIP LOCKED and the audit column allowlist.
+    async with ctx.factory() as db:
+        probe_comp = Competition(
+            slug="auto-probe", title="Restricted scheduler", status="scheduled",
+            start_at=now - timedelta(hours=1), created_by=organizer_id,
+        )
+        db.add(probe_comp)
+        await db.commit()
+        probe_id = probe_comp.id
+    probe = f"cyberlab_auto_probe_{uuid.uuid4().hex[:10]}"
+    async with ctx.factory() as db:
+        try:
+            await db.execute(text(f'CREATE ROLE "{probe}" NOLOGIN'))
+            await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{probe}"'))
+            await db.execute(text(
+                'GRANT SELECT (id, slug, status, start_at, end_at) '
+                f'ON competitions TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT UPDATE (status, updated_at) '
+                f'ON competitions TO "{probe}"'
+            ))
+            await db.execute(text(
+                'GRANT INSERT (id, event, target_id, details) '
+                f'ON audit_logs TO "{probe}"'
+            ))
+            await db.execute(text(f'SET LOCAL ROLE "{probe}"'))
+            rows = (await db.execute(text(
+                "SELECT id::text, slug, status, "
+                "floor(extract(epoch FROM start_at) * 1000)::bigint, "
+                "floor(extract(epoch FROM end_at) * 1000)::bigint, "
+                "floor(extract(epoch FROM now()) * 1000)::bigint "
+                "FROM competitions WHERE status='scheduled' AND start_at<=now() "
+                "ORDER BY id LIMIT 250 FOR UPDATE SKIP LOCKED"
+            ))).all()
+            assert any(row[0] == str(probe_id) for row in rows)
+            await db.execute(text(
+                "UPDATE competitions SET status='live', updated_at=now() "
+                "WHERE id=:cid"
+            ), {"cid": probe_id})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, target_id, details) "
+                "VALUES (gen_random_uuid(), 'competition.auto_transition', "
+                "'auto-probe', CAST(:details AS jsonb))"
+            ), {"details": '{"action":"auto","from":"scheduled","to":"live"}'})
+        finally:
+            await db.rollback()
+
+    # If an automatic audit cannot be inserted, no status change may survive.
+    async with ctx.factory() as db:
+        await db.execute(text(
+            "ALTER TABLE audit_logs ADD CONSTRAINT block_auto_transition "
+            "CHECK (event <> 'competition.auto_transition') NOT VALID"
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(timeout=5) as client:
+        failed = await client.post(
+            internal, json={},
+            headers={"x-internal-token": ctx.token},
+        )
+        assert failed.status_code == 503
+    async with ctx.factory() as db:
+        assert (await db.get(Competition, probe_id)).status == "scheduled"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "competition.auto_transition",
+            AuditLog.target_id == "auto-probe",
+        )) == 0

@@ -173,3 +173,5 @@ GRANT UPDATE (freeze_leaderboard, frozen_at, updated_at)
 -- require the status mutation and transition audit in one transaction.
 GRANT SELECT (start_at, end_at) ON public.competitions TO cyberlab_security_writer;
 GRANT UPDATE (status) ON public.competitions TO cyberlab_security_writer;
+-- Automatic scheduler writes use these same restricted columns and the audit
+-- insert allowlist; no extra table-wide privileges are required.

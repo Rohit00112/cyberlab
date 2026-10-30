@@ -3,6 +3,7 @@ pub mod attempts;
 pub mod authorization;
 pub mod catalog;
 pub mod competition;
+pub mod competition_auto;
 pub mod competition_freeze;
 pub mod competition_links;
 pub mod competition_participants;
