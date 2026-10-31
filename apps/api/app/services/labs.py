@@ -32,6 +32,9 @@ from app.schemas.lab import LabAdminOut, LabOut
 from app.services.users import record_audit
 
 ACTIVE_STATUSES = {s.value for s in ACTIVE_STATES}
+RUST_TERMINAL_BUSY_STATES = {
+    "provisioning", "starting", "resetting", "stopping", "terminating",
+}
 DOCKER_TIMEOUT = 30
 
 
@@ -519,6 +522,11 @@ async def expire_lab(
 ) -> LabOut:
     if not await _can_manage_lab(user, lab):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    rust_enabled = bool(get_settings().rust_core_url)
+    if rust_enabled and lab.status in RUST_TERMINAL_BUSY_STATES:
+        raise HTTPException(
+            status_code=409, detail=f"Cannot expire lab in status '{lab.status}'",
+        )
     ref = lab.provider_ref or lab.container_id
     if lab.status == "running" and not ref:
         raise HTTPException(
@@ -529,10 +537,24 @@ async def expire_lab(
         try:
             await _lab_provider_for(lab).stop_lab(ref)
         except (DockerError, LabProviderError) as exc:
+            await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Unable to stop lab environment",
             ) from exc
+    if rust_enabled:
+        from app.core.rust_engine import finalize_lab_terminal_in_rust
+
+        lab_id = lab.id
+        await db.rollback()
+        await finalize_lab_terminal_in_rust(
+            "expire", str(lab_id), str(user.id), user.roles,
+            request.client.host if request and request.client else None, ref,
+        )
+        refreshed = await db.get(LabInstance, lab_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Lab not found")
+        return await _to_out(db, refreshed)
     lab.status = "expired"
     db.add(AuditLog(
         event="lab.expire", user_id=user.id, target_id=str(lab.id),
@@ -712,6 +734,17 @@ async def admin_terminate_lab(
     admin_user: User,
     request: Request | None = None,
 ) -> LabAdminOut:
+    from app.core.authorization import check_permission
+
+    # Protect the destructive provider call even if an internal caller bypasses
+    # the public route's require_permission dependency.
+    if not await check_permission(admin_user.roles or [], "lab.admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    rust_enabled = bool(get_settings().rust_core_url)
+    if rust_enabled and lab.status in RUST_TERMINAL_BUSY_STATES:
+        raise HTTPException(
+            status_code=409, detail=f"Cannot terminate lab in status '{lab.status}'",
+        )
     ref = lab.provider_ref or lab.container_id
     if lab.status == "running" and not ref:
         raise HTTPException(
@@ -724,17 +757,31 @@ async def admin_terminate_lab(
             await provider.stop_lab(ref)
             await provider.remove_lab(ref)
         except (DockerError, LabProviderError) as exc:
+            await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Unable to terminate lab environment",
             ) from exc
-    lab.status = "expired"
-    db.add(AuditLog(
-        event="lab.terminate", user_id=admin_user.id, target_id=str(lab.id),
-        ip_address=request.client.host if request and request.client else None,
-    ))
-    await db.commit()
-    await db.refresh(lab)
+    if rust_enabled:
+        from app.core.rust_engine import finalize_lab_terminal_in_rust
+
+        lab_id = lab.id
+        await db.rollback()
+        await finalize_lab_terminal_in_rust(
+            "terminate", str(lab_id), str(admin_user.id), admin_user.roles or [],
+            request.client.host if request and request.client else None, ref,
+        )
+        lab = await db.get(LabInstance, lab_id)
+        if lab is None:
+            raise HTTPException(status_code=404, detail="Lab not found")
+    else:
+        lab.status = "expired"
+        db.add(AuditLog(
+            event="lab.terminate", user_id=admin_user.id, target_id=str(lab.id),
+            ip_address=request.client.host if request and request.client else None,
+        ))
+        await db.commit()
+        await db.refresh(lab)
     u = (await _users_map(db, [lab.user_id])).get(str(lab.user_id))
     challenge = await db.get(Challenge, lab.challenge_id)
     return LabAdminOut(

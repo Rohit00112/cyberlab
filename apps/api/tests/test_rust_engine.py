@@ -121,6 +121,50 @@ async def test_lab_stop_adapter_accepts_confirmed_outcomes(outcome):
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome, current, expected", [
+    ("not_found", None, 404),
+    ("state_changed", "provisioning", 409),
+    ("state_changed", "unknown", 503),
+    ("stale_provider", None, 409),
+    ("provider_missing", None, 503),
+    ("expired", "running", 503),
+    ("unexpected", None, 503),
+])
+async def test_lab_terminal_adapter_rejects_invalid_or_failed_outcomes(
+    outcome, current, expected,
+):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value={
+        "outcome": outcome, "current_status": current,
+    })):
+        with pytest.raises(HTTPException) as error:
+            await rust_engine.finalize_lab_terminal_in_rust(
+                "expire", str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, "guest",
+            )
+        assert error.value.status_code == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["expire", "terminate"])
+@pytest.mark.parametrize("outcome", ["expired", "already_expired"])
+async def test_lab_terminal_adapter_accepts_only_confirmed_outcomes(action, outcome):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value={
+        "outcome": outcome, "current_status": None,
+    })) as call:
+        await rust_engine.finalize_lab_terminal_in_rust(
+            action, str(uuid.uuid4()), str(uuid.uuid4()), ["sysadmin"], None, "guest",
+        )
+        assert call.await_args.args[1]["action"] == action
+
+
+@pytest.mark.asyncio
+async def test_lab_terminal_adapter_blocks_unknown_action():
+    with pytest.raises(ValueError):
+        await rust_engine.finalize_lab_terminal_in_rust(
+            "destroy", str(uuid.uuid4()), str(uuid.uuid4()), ["sysadmin"], None, None,
+        )
+
+
 async def _seed_user_and_challenge(factory):
     async with factory() as db:
         user = User(

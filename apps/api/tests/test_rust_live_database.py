@@ -777,6 +777,201 @@ async def test_rust_lab_stop_contract_authorization_handle_and_atomic_audit(
         app.dependency_overrides.pop(get_current_user, None)
 
 
+async def test_rust_lab_terminal_expiry_and_admin_termination_are_atomic(
+    live_rust_database, monkeypatch,
+):
+    """Exercise real Rust writer through FastAPI, with only provider calls stubbed."""
+    from app.services import labs
+
+    ctx = live_rust_database
+    owner_id, admin_id, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(labs, "get_settings", lambda: settings)
+    provider = SimpleNamespace(
+        stop_lab=AsyncMock(return_value=None),
+        remove_lab=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(labs, "_lab_provider_for", lambda _lab: provider)
+    async with ctx.factory() as db:
+        manual = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="manual-guest",
+        )
+        terminated = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+            provider="docker", provider_ref="terminate-guest",
+        )
+        stale = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="new-guest",
+        )
+        busy = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="provisioning",
+            provider="docker",
+        )
+        rollback = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="rollback-guest",
+        )
+        db.add_all([manual, terminated, stale, busy, rollback])
+        await db.commit()
+        manual_id, terminated_id, stale_id = manual.id, terminated.id, stale.id
+        busy_id, rollback_id = busy.id, rollback.id
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=owner_id, keycloak_sub="terminal-owner", roles=["student"],
+        permissions=["lab.launch"],
+    )
+    internal = f"{ctx.rust_url}/v1/labs/terminal/finalize"
+    payload = {
+        "action": "expire", "lab_id": str(stale_id),
+        "actor_id": str(owner_id), "roles": ["student"],
+        "ip_address": "127.0.0.1", "expected_provider_ref": "old-guest",
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            expired = await client.post(f"/api/v1/labs/{manual_id}/expire")
+            assert expired.status_code == 200, expired.text
+            assert expired.json()["status"] == "expired"
+            repeat = await client.post(f"/api/v1/labs/{manual_id}/expire")
+            assert repeat.status_code == 200, repeat.text
+            busy_expiry = await client.post(f"/api/v1/labs/{busy_id}/expire")
+            assert busy_expiry.status_code == 409
+        provider.stop_lab.assert_awaited_once_with("manual-guest")
+
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            id=admin_id, keycloak_sub="terminal-admin", roles=["sysadmin"],
+            permissions=["lab.admin", "lab.launch"],
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            result = await client.post(
+                f"/api/v1/admin/labs/{terminated_id}/terminate",
+            )
+            assert result.status_code == 200, result.text
+            assert result.json()["status"] == "expired"
+            # A user expiry stops but deliberately retains the guest. The
+            # administrator must still be able to remove and audit it.
+            cleanup = await client.post(
+                f"/api/v1/admin/labs/{manual_id}/terminate",
+            )
+            assert cleanup.status_code == 200, cleanup.text
+            busy_termination = await client.post(
+                f"/api/v1/admin/labs/{busy_id}/terminate",
+            )
+            assert busy_termination.status_code == 409
+        assert provider.remove_lab.await_count == 2
+        provider.remove_lab.assert_any_await("terminate-guest")
+        provider.remove_lab.assert_any_await("manual-guest")
+
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            assert (await client.post(internal, json=payload)).status_code == 401
+            for update, http_status, outcome in [
+                ({"actor_id": str(admin_id)}, 403, None),
+                ({"roles": ["guest"]}, 403, None),
+                ({}, 200, "stale_provider"),
+                ({"lab_id": str(busy_id), "expected_provider_ref": None},
+                 200, "state_changed"),
+                ({"action": "terminate"}, 403, None),
+                ({"action": "terminate", "roles": ["sysadmin"],
+                  "actor_id": str(admin_id)}, 200, "stale_provider"),
+            ]:
+                response = await client.post(
+                    internal, json={**payload, **update},
+                    headers={"x-internal-token": ctx.token},
+                )
+                assert response.status_code == http_status, response.text
+                if outcome:
+                    assert response.json()["outcome"] == outcome
+
+        async with ctx.factory() as db:
+            assert (await db.get(LabInstance, manual_id)).status == "expired"
+            assert (await db.get(LabInstance, terminated_id)).status == "expired"
+            assert (await db.get(LabInstance, stale_id)).status == "running"
+            for lab_id, event, expected in [
+                (manual_id, "lab.expire", 1),
+                (manual_id, "lab.terminate", 1),
+                (terminated_id, "lab.terminate", 1),
+                (stale_id, "lab.expire", 0),
+            ]:
+                assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                    AuditLog.event == event, AuditLog.target_id == str(lab_id),
+                )) == expected
+
+        # Execute the terminal writer SQL under a disposable, column-limited
+        # PostgreSQL identity. No table-wide SELECT/UPDATE is needed.
+        role = f"cyberlab_terminal_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+                await db.execute(text(
+                    "GRANT SELECT (id, user_id, status, provider_ref, container_id) "
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (status, updated_at) '
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{role}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{role}"'))
+                row = (await db.execute(text(
+                    'SELECT user_id::text, status, COALESCE(provider_ref, container_id) '
+                    'FROM lab_instances WHERE id = :lab_id FOR UPDATE'
+                ), {"lab_id": stale_id})).one()
+                assert row == (str(owner_id), "running", "new-guest")
+                await db.execute(text(
+                    "UPDATE lab_instances SET status = 'expired', updated_at = now() "
+                    "WHERE id = :lab_id"
+                ), {"lab_id": stale_id})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address) "
+                    "VALUES (gen_random_uuid(), :event, :uid, :lid, '127.0.0.1')"
+                ), {
+                    "event": "lab.expire", "uid": owner_id, "lid": str(stale_id),
+                })
+            finally:
+                await db.rollback()
+
+        # A failed audit insert must also roll back the status change.
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_expire "
+                "CHECK (event <> 'lab.expire') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            failed = await client.post(internal, json={
+                **payload, "lab_id": str(rollback_id),
+                "expected_provider_ref": "rollback-guest",
+            }, headers={"x-internal-token": ctx.token})
+            assert failed.status_code == 503, failed.text
+        async with ctx.factory() as db:
+            assert (await db.get(LabInstance, rollback_id)).status == "running"
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.expire",
+                AuditLog.target_id == str(rollback_id),
+            )) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 async def test_rust_hint_reveals_are_ordered_idempotent_and_audited_atomically(
     live_rust_database, monkeypatch,
 ):
