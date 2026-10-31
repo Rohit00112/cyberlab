@@ -69,10 +69,11 @@ The repository script `apps/api/scripts/proxmox_template.sh` must be copied to
 and run **on the Proxmox node**, not on the Mac API host. It is a new-template
 builder, not an in-place repair tool: choose a fresh numeric `PVMID` and an
 approved isolated `PM_BRIDGE`. **Do not run it with an existing VMID** (in the
-current lab, `9000` is the original template and VM `108` is an active
-CyberLab-owned lab). Confirm capacity, storage and isolation first.
+current lab, previous VMs `9000`, `108` and `111` were removed; staging VM
+`9002` may already exist). Confirm the live cluster inventory, capacity,
+storage and isolation first.
 
-The host needs `libguestfs-tools` (`virt-customize`), `qm`, `pvesm`, `ip`,
+The host needs `guestfs-tools` (`virt-customize`), `qm`, `pvesm`, `ip`,
 `curl` and `sha512sum`. Use an SSH public key as the temporary Cloud-Init login
 method, or explicitly supply `PM_CI_PASS` for console login. With neither,
 the script refuses to create a VM. Avoid inherited/static template passwords
@@ -95,6 +96,16 @@ allocated VM is left available for manual, ownership-verified inspection; it
 will not delete or overwrite another guest. Set `PM_IMAGE_SHA512` to a trusted
 pinned image hash to validate the downloaded image; without one the script
 warns, and its default image URL uses HTTPS.
+
+Proxmox defaults to `ciupgrade=1`, which triggers `apt-get dist-upgrade` on
+first boot. The builder explicitly sets `--ciupgrade 0` so isolated lab
+networks without DHCP or package-mirror access do not fail Cloud-Init due to
+automatic upgrades. This is **not** a substitute for patching the image in a
+controlled build pipeline. For a previously failed staging VM, inspect
+`cloud-init status --long` with `qm guest exec`, set `qm set <VMID> --ciupgrade 0`,
+regenerate its Cloud-Init drive, and rerun Cloud-Init only on that disposable
+VM before considering manual template conversion. Never retry the builder
+against an existing VMID.
 
 After a successful build, set `LAB_IMAGE` to the new template VMID in the API
 configuration and run the read-only `scripts.proxmox_check` readiness check.

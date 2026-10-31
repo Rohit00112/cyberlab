@@ -51,7 +51,8 @@ case "$cmd" in
     ;;
   create) touch "$FAKE_STATE/created" ;;
   config) echo 'unused0: local-lvm:vm-9123-disk-0' ;;
-  importdisk|set|resize) ;;
+  importdisk|resize) ;;
+  set) printf '%s\n' "$*" >> "$FAKE_STATE/set_args" ;;
   start) touch "$FAKE_STATE/running" ;;
   shutdown) : > "$FAKE_STATE/stopped"; rm -f "$FAKE_STATE/running" ;;
   template) touch "$FAKE_STATE/template" ;;
@@ -129,6 +130,10 @@ def test_template_builder_verifies_agent_cleans_and_sizes_disk(fake_proxmox):
     commands = (state / "commands").read_text().splitlines()
     assert "customize" in commands
     assert "resize" in commands
+    assert any(
+        "--ciupgrade 0" in args
+        for args in (state / "set_args").read_text().splitlines()
+    )
     assert commands.count("guest") == 4  # ping, Cloud-Init wait/clean, host-key clean
     assert commands.index("template") > commands.index("shutdown")
     assert (

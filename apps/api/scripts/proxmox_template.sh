@@ -113,7 +113,7 @@ cp -- "$IMG_PATH" "$WORK_IMAGE"
 
 log "installing qemu-guest-agent into a private cloud-image copy"
 virt-customize -a "$WORK_IMAGE" --install qemu-guest-agent --truncate /etc/machine-id \
-    || die "virt-customize failed; install libguestfs-tools and verify host package-mirror access"
+    || die "virt-customize failed; install guestfs-tools and verify host package-mirror access"
 
 log "creating VM $PVMID ($PM_NAME)"
 qm create "$PVMID" \
@@ -132,6 +132,9 @@ IMPORTED_DISK="$(qm config "$PVMID" | awk -F ': ' '/^unused[0-9]+:/ {split($2, p
 [[ -n "$IMPORTED_DISK" && "$IMPORTED_DISK" != *$'\n'* && "$IMPORTED_DISK" == "$PM_STORAGE:"* ]] || die "could not identify exactly one imported disk; VM $PVMID needs manual inspection"
 
 log "attaching disk + cloud-init drive"
+# Proxmox defaults ciupgrade=1, which runs apt dist-upgrade on first boot.
+# An isolated lab bridge may have no DHCP or package-mirror access; do not
+# make successful Cloud-Init initialization depend on network package upgrades.
 qm set "$PVMID" \
     --scsi0 "$IMPORTED_DISK" \
     --ide2 "${PM_STORAGE}:cloudinit" \
@@ -140,6 +143,7 @@ qm set "$PVMID" \
     --vga serial0 \
     --ostype l26 \
     --ipconfig0 ip=dhcp \
+    --ciupgrade 0 \
     --ciuser "$PM_CI_USER"
 if [[ -n "$PM_CI_PASS" ]]; then
     qm set "$PVMID" --cipassword "$PM_CI_PASS"

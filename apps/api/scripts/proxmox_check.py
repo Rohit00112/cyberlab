@@ -35,6 +35,17 @@ from app.core.config import get_settings
 STATUS = {"ok", "warn", "fail"}
 
 
+def _describe_error(exc: httpx.HTTPError | RuntimeError) -> str:
+    """Keep network failures actionable even when HTTPX supplies no message."""
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"{type(exc).__name__}: request timed out; verify the Proxmox API "
+            "endpoint, network route, tunnel, and firewall"
+        )
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 class ProxmoxCheck:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -116,7 +127,7 @@ class ProxmoxCheck:
                     else f"{path}: required privileges granted",
                 )
             except (httpx.HTTPError, RuntimeError) as exc:
-                self._serve(label, "fail", f"{path}: {exc}")
+                self._serve(label, "fail", f"{path}: {_describe_error(exc)}")
 
     async def run(self) -> int:
         if self.settings.lab_provider != "proxmox":
@@ -142,10 +153,10 @@ class ProxmoxCheck:
                 f"{version.get('version', '?') if isinstance(version, dict) else version}",
             )
         except httpx.HTTPError as exc:
-            self._serve("auth", "fail", f"unreachable: {exc}")
+            self._serve("auth", "fail", f"unreachable: {_describe_error(exc)}")
             return self._print_and_exit()
         except RuntimeError as exc:
-            self._serve("auth", "fail", str(exc))
+            self._serve("auth", "fail", _describe_error(exc))
             return self._print_and_exit()
 
         # Node
@@ -166,7 +177,7 @@ class ProxmoxCheck:
                     f"'{self.node}' is {match.get('status')}",
                 )
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("node", "fail", str(exc))
+            self._serve("node", "fail", _describe_error(exc))
 
         # Storage
         try:
@@ -190,7 +201,7 @@ class ProxmoxCheck:
                     f"'{self.storage}' ({storage.get('type')}) content={storage.get('content')}",
                 )
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("storage", "fail", str(exc))
+            self._serve("storage", "fail", _describe_error(exc))
 
         # Bridge
         try:
@@ -209,7 +220,7 @@ class ProxmoxCheck:
                     "bridge", "ok", f"'{self.bridge}' (type={bridge.get('type')})"
                 )
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("bridge", "fail", str(exc))
+            self._serve("bridge", "fail", _describe_error(exc))
 
         # Template
         docker_like = re.search(r"[:/.]", self.template_vmid)
@@ -242,7 +253,7 @@ class ProxmoxCheck:
                     f"status={template.get('status')}",
                 )
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("template", "fail", str(exc))
+            self._serve("template", "fail", _describe_error(exc))
 
         # A clone requires an available target VMID and effective permissions
         # on that target, separately from the source template.
@@ -254,7 +265,7 @@ class ProxmoxCheck:
             next_vmid = str(next_id)
             self._serve("nextid", "ok", f"next free VMID is {next_vmid}")
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("nextid", "fail", str(exc))
+            self._serve("nextid", "fail", _describe_error(exc))
 
         # Proxmox checks SDN.Use for both the template's inherited NICs and
         # the replacement bridge configured after cloning. Plain vmbr bridges
@@ -274,7 +285,7 @@ class ProxmoxCheck:
                     if matched:
                         bridges.add(matched.group(1))
         except (httpx.HTTPError, RuntimeError) as exc:
-            self._serve("template-net", "fail", str(exc))
+            self._serve("template-net", "fail", _describe_error(exc))
 
         await self._check_permissions(next_vmid, bridges)
 

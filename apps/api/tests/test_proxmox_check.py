@@ -11,6 +11,27 @@ from scripts import proxmox_check
 
 
 @pytest.mark.asyncio
+async def test_readiness_timeout_explains_unreachable_endpoint(monkeypatch, capsys):
+    settings = SimpleNamespace(
+        lab_provider="proxmox", proxmox_endpoint="https://proxmox.example.test",
+        proxmox_node="com", proxmox_storage="local-lvm", proxmox_bridge="vmbr1",
+        lab_image="9002", proxmox_user="test!token", proxmox_token_uuid="test-secret",
+    )
+    monkeypatch.setattr(proxmox_check, "get_settings", lambda: settings)
+    checker = proxmox_check.ProxmoxCheck()
+
+    async def timed_out(_path, request_timeout=10.0):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(checker, "_get", timed_out)
+    assert await checker.run() == 1
+    output = capsys.readouterr().out
+    assert "[FAIL] auth" in output
+    assert "ReadTimeout: request timed out" in output
+    assert "network route" in output
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("grant_provisioning", [False, True])
 async def test_readiness_checks_effective_token_privileges(
     monkeypatch, capsys, grant_provisioning
