@@ -16,6 +16,7 @@ pub mod hints;
 pub mod lab_auto_expiry;
 pub mod lab_leases;
 pub mod lab_provisioning;
+pub mod lab_reset;
 pub mod lab_stop;
 pub mod lab_terminal;
 pub mod leaderboard;

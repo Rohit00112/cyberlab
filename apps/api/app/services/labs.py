@@ -386,6 +386,102 @@ async def stop_lab(
     return await _to_out(db, lab)
 
 
+async def _reset_lab_with_rust(
+    db: AsyncSession,
+    user: CurrentUser,
+    lab: LabInstance,
+    lab_cfg: dict,
+    request: Request | None,
+) -> LabOut:
+    """Claim reset before provider I/O; finalize state, lease and audit in Rust."""
+    from app.core.rust_engine import transition_lab_reset_in_rust
+
+    lab_id = lab.id
+    old_ref = lab.provider_ref or lab.container_id
+    old_provider = _lab_provider_for(lab)
+    new_provider = get_lab_provider()
+    network_name = lab.network_name
+    prepared = LabInstance(
+        id=lab_id, user_id=lab.user_id, challenge_id=lab.challenge_id,
+        network_name=network_name, container_name=lab.container_name,
+    )
+    identity = {
+        "lab_id": str(lab_id),
+        "actor_id": str(user.id),
+        "roles": user.roles,
+        "ip_address": request.client.host if request and request.client else None,
+        "expected_old_ref": old_ref,
+    }
+    # Do not carry a stale ORM read transaction over the Rust row lock.
+    await db.rollback()
+    await transition_lab_reset_in_rust("begin", **identity)
+    old_removed = old_ref is None
+    new_ref: str | None = None
+    try:
+        if old_ref:
+            # An uncertain old-resource removal must never be ignored.
+            await old_provider.remove_lab(old_ref)
+            old_removed = True
+        await new_provider.ensure_network(network_name)
+        await _start_container(prepared, lab_cfg)
+        new_ref = prepared.provider_ref
+        await transition_lab_reset_in_rust(
+            "complete", **identity,
+            provider=prepared.provider,
+            provider_ref=new_ref,
+            container_name=prepared.container_name,
+            flag_hash=prepared.flag_hash,
+            flag_path=prepared.flag_path,
+            connection_hint=prepared.connection_hint,
+            expiry_minutes=lab_cfg["expiry_minutes"],
+        )
+    except Exception as exc:
+        # The core may have committed before its response was lost. Check
+        # persisted state before compensating a potentially live replacement.
+        await db.rollback()
+        if new_ref:
+            current = await db.get(LabInstance, lab_id)
+            if (
+                current is not None
+                and current.status == "running"
+                and current.provider_ref == new_ref
+            ):
+                return await _to_out(db, current)
+        await db.rollback()
+
+        remaining = old_ref if not old_removed else None
+        allocated = new_ref or (exc.provider_ref if isinstance(exc, LabProviderError) else None)
+        if allocated:
+            try:
+                await new_provider.stop_lab(allocated)
+            except (DockerError, LabProviderError):
+                pass
+            try:
+                await new_provider.remove_lab(allocated)
+            except (DockerError, LabProviderError):
+                remaining = allocated
+        try:
+            await transition_lab_reset_in_rust(
+                "fail", **identity, error_message=str(exc)[:4096] or "Reset failed",
+                remaining_provider_ref=remaining,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger("cyberlab.services.labs").exception(
+                "Reset %s could not record failure after provider compensation", lab_id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lab reset failed — infrastructure or persistence unavailable",
+        ) from exc
+    await db.rollback()
+    refreshed = await db.get(LabInstance, lab_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Lab not found")
+    return await _to_out(db, refreshed)
+
+
 async def reset_lab(
     db: AsyncSession,
     user: CurrentUser,
@@ -401,6 +497,8 @@ async def reset_lab(
     if getattr(challenge, "template_version_id", None):
         template_ver = await db.get(MachineTemplateVersion, challenge.template_version_id)
     lab_cfg = _lab_settings(challenge, template_ver)
+    if get_settings().rust_core_url:
+        return await _reset_lab_with_rust(db, user, lab, lab_cfg, request)
     provider = get_lab_provider()
     ref = lab.provider_ref or lab.container_id
     if ref:

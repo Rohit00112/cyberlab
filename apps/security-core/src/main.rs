@@ -52,6 +52,10 @@ use cyberlab_security_core::lab_provisioning::{
     fail as fail_provisioning_job, start as start_provisioning_job, ProvisioningClaimRequest,
     ProvisioningClaimResponse, ProvisioningCompleteRequest, ProvisioningFailRequest,
 };
+use cyberlab_security_core::lab_reset::{
+    begin as begin_lab_reset, complete as complete_lab_reset, fail as fail_lab_reset,
+    ResetBeginRequest, ResetCompleteRequest, ResetFailRequest, ResetResponse,
+};
 use cyberlab_security_core::lab_stop::{
     finalize as finalize_lab_stop, LabStopRequest, LabStopResponse,
 };
@@ -638,6 +642,66 @@ async fn finalize_automatic_lab_expiry_route(
     }
 }
 
+async fn begin_lab_reset_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ResetBeginRequest>,
+) -> Result<Json<ResetResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match begin_lab_reset(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn complete_lab_reset_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ResetCompleteRequest>,
+) -> Result<Json<ResetResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match complete_lab_reset(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn fail_lab_reset_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ResetFailRequest>,
+) -> Result<Json<ResetResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match fail_lab_reset(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 async fn claim_provisioning_job_route(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -788,6 +852,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/v1/labs/expire-auto/finalize",
             post(finalize_automatic_lab_expiry_route),
         )
+        .route("/v1/labs/reset/begin", post(begin_lab_reset_route))
+        .route("/v1/labs/reset/complete", post(complete_lab_reset_route))
+        .route("/v1/labs/reset/fail", post(fail_lab_reset_route))
         .route(
             "/v1/labs/provisioning/claim",
             post(claim_provisioning_job_route),

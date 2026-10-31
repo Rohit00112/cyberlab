@@ -198,6 +198,43 @@ async def test_auto_expiry_adapter_rejects_malformed_responses(payload):
         assert error.value.status_code == 503
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase, outcome", [
+    ("begin", "claimed"),
+    ("complete", "completed"),
+    ("complete", "already_completed"),
+    ("fail", "failed"),
+])
+async def test_reset_adapter_accepts_valid_phase_outcomes(phase, outcome):
+    with patch.object(rust_engine, "_post", new=AsyncMock(
+        return_value={"outcome": outcome},
+    )) as send:
+        assert await rust_engine.transition_lab_reset_in_rust(
+            phase, str(uuid.uuid4()), str(uuid.uuid4()), ["student"], None, "old-ref",
+        ) == outcome
+        assert send.await_args.args[0] == f"/v1/labs/reset/{phase}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome, status_code", [
+    ("not_found", 404),
+    ("unavailable", 409),
+    ("stale_provider", 409),
+    ("provider_missing", 503),
+    ("failed", 503),
+])
+async def test_reset_adapter_maps_errors_and_rejects_wrong_outcome(outcome, status_code):
+    with patch.object(rust_engine, "_post", new=AsyncMock(
+        return_value={"outcome": outcome},
+    )):
+        with pytest.raises(HTTPException) as error:
+            await rust_engine.transition_lab_reset_in_rust(
+                "begin", str(uuid.uuid4()), str(uuid.uuid4()),
+                ["student"], None, "old-ref",
+            )
+        assert error.value.status_code == status_code
+
+
 async def _seed_user_and_challenge(factory):
     async with factory() as db:
         user = User(

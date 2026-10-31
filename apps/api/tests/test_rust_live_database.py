@@ -1123,6 +1123,211 @@ async def test_rust_auto_expiry_sweep_rechecks_lease_handle_and_audit(
         )) == 0
 
 
+async def test_rust_lab_reset_claim_completion_and_cleanup_failure(
+    live_rust_database, monkeypatch,
+):
+    """Rust owns reset state and audits; provider operations are fully mocked."""
+    from app.services import labs
+
+    ctx = live_rust_database
+    owner_id, other_id, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+        lab_image="test-image", lab_default_expiry_minutes=30,
+        lab_max_expiry_minutes=120, lab_provider="docker",
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(authorization, "get_settings", lambda: settings)
+    monkeypatch.setattr(labs, "get_settings", lambda: settings)
+
+    async def remove_lab(ref):
+        if ref in {"unremovable", "leaked-guest"}:
+            raise labs.LabProviderError("old guest removal refused")
+
+    provider = SimpleNamespace(
+        ensure_network=AsyncMock(return_value=None),
+        remove_lab=AsyncMock(side_effect=remove_lab),
+        stop_lab=AsyncMock(return_value=None),
+        create_lab=AsyncMock(side_effect=[
+            ("new-guest", "172.30.0.7"),
+            labs.LabProviderError(
+                "allocation failed after creating guest", provider_ref="leaked-guest",
+            ),
+        ]),
+    )
+    monkeypatch.setattr(labs, "get_lab_provider", lambda: provider)
+    monkeypatch.setattr(labs, "_lab_provider_for", lambda _lab: provider)
+    async with ctx.factory() as db:
+        success = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+            provider="docker", provider_ref="old-guest", container_id="old-guest",
+            network_name="cyberlab-reset-test",
+        )
+        failure = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+            provider="docker", provider_ref="unremovable",
+            network_name="cyberlab-reset-test",
+        )
+        partial = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="stopped",
+            provider="docker", provider_ref="partial-old",
+            network_name="cyberlab-reset-test",
+        )
+        rollback = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="resetting",
+            provider="docker", provider_ref="rollback-old",
+            network_name="cyberlab-reset-test",
+        )
+        db.add_all([success, failure, partial, rollback])
+        await db.commit()
+        success_id, failure_id, rollback_id = success.id, failure.id, rollback.id
+        partial_id = partial.id
+
+    async def get_test_db():
+        async with ctx.factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = get_test_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=owner_id, keycloak_sub="reset-owner", roles=["student"],
+        permissions=["lab.launch", "lab.reset"],
+    )
+    base = f"{ctx.rust_url}/v1/labs/reset"
+    identity = {
+        "lab_id": str(success_id), "actor_id": str(owner_id),
+        "roles": ["student"], "expected_old_ref": "old-guest",
+        "ip_address": "127.0.0.1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            assert (await client.post(f"{base}/begin", json=identity)).status_code == 401
+            for changes, http_code, outcome in [
+                ({"roles": ["guest"]}, 403, None),
+                ({"actor_id": str(other_id)}, 403, None),
+                ({"expected_old_ref": "incorrect"}, 200, "stale_provider"),
+            ]:
+                reply = await client.post(
+                    f"{base}/begin", json={**identity, **changes},
+                    headers={"x-internal-token": ctx.token},
+                )
+                assert reply.status_code == http_code, reply.text
+                if outcome:
+                    assert reply.json() == {"outcome": outcome}
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await client.post(f"/api/v1/labs/{success_id}/reset")
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "running"
+            assert response.json()["expires_at"] is not None
+            partial_failure = await client.post(f"/api/v1/labs/{partial_id}/reset")
+            assert partial_failure.status_code == 503, partial_failure.text
+            failed = await client.post(f"/api/v1/labs/{failure_id}/reset")
+            assert failed.status_code == 503, failed.text
+        provider.remove_lab.assert_any_await("old-guest")
+        provider.remove_lab.assert_any_await("partial-old")
+        provider.remove_lab.assert_any_await("leaked-guest")
+        provider.remove_lab.assert_any_await("unremovable")
+        provider.stop_lab.assert_awaited_once_with("leaked-guest")
+        assert provider.create_lab.await_count == 2
+
+        async with ctx.factory() as db:
+            live = await db.get(LabInstance, success_id)
+            assert live.status == "running"
+            assert live.provider_ref == "new-guest"
+            assert live.flag_hash and len(live.flag_hash) == 64
+            broken = await db.get(LabInstance, failure_id)
+            assert broken.status == "failed"
+            assert broken.provider_ref == "unremovable"
+            stranded = await db.get(LabInstance, partial_id)
+            assert stranded.status == "failed"
+            assert stranded.provider_ref == "leaked-guest"
+            for lab_id, event, count in [
+                (success_id, "lab.reset.begin", 1),
+                (success_id, "lab.reset", 1),
+                (failure_id, "lab.reset.begin", 1),
+                (failure_id, "lab.reset.failure", 1),
+                (failure_id, "lab.reset", 0),
+                (partial_id, "lab.reset.begin", 1),
+                (partial_id, "lab.reset.failure", 1),
+                (partial_id, "lab.reset", 0),
+            ]:
+                assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                    AuditLog.event == event, AuditLog.target_id == str(lab_id),
+                )) == count
+
+        # A narrow PostgreSQL role can perform exactly the writer's statements.
+        role = f"cyberlab_reset_probe_{uuid.uuid4().hex[:10]}"
+        async with ctx.factory() as db:
+            try:
+                await db.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+                await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+                await db.execute(text(
+                    'GRANT SELECT (id, user_id, status, provider_ref, container_id) '
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT UPDATE (status, updated_at, provider, provider_ref, '
+                    'container_id, container_name, flag_hash, flag_path, '
+                    'connection_hint, expires_at, error_message) '
+                    f'ON lab_instances TO "{role}"'
+                ))
+                await db.execute(text(
+                    'GRANT INSERT (id, event, user_id, target_id, ip_address) '
+                    f'ON audit_logs TO "{role}"'
+                ))
+                await db.execute(text(f'SET LOCAL ROLE "{role}"'))
+                result = (await db.execute(text(
+                    'SELECT user_id::text, status, COALESCE(provider_ref, container_id) '
+                    'FROM lab_instances WHERE id = :lab_id FOR UPDATE'
+                ), {"lab_id": rollback_id})).one()
+                assert result == (str(owner_id), "resetting", "rollback-old")
+                await db.execute(text(
+                    "UPDATE lab_instances SET status = 'running', provider = 'docker', "
+                    "provider_ref = 'new-probe', container_id = 'new-probe', "
+                    "container_name = 'probe', flag_hash = :digest, "
+                    "flag_path = '/flag.txt', connection_hint = 'ready', "
+                    "expires_at = now() + interval '30 minutes', "
+                    "error_message = NULL, updated_at = now() WHERE id = :lab_id"
+                ), {"lab_id": rollback_id, "digest": "a" * 64})
+                await db.execute(text(
+                    "INSERT INTO audit_logs (id, event, user_id, target_id, ip_address) "
+                    "VALUES (gen_random_uuid(), 'lab.reset', :uid, :lid, '127.0.0.1')"
+                ), {"uid": owner_id, "lid": str(rollback_id)})
+            finally:
+                await db.rollback()
+
+        async with ctx.factory() as db:
+            await db.execute(text(
+                "ALTER TABLE audit_logs ADD CONSTRAINT block_lab_reset "
+                "CHECK (event <> 'lab.reset') NOT VALID"
+            ))
+            await db.commit()
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            response = await client.post(
+                f"{base}/complete", json={
+                    **identity, "lab_id": str(rollback_id),
+                    "expected_old_ref": "rollback-old",
+                    "provider": "docker", "provider_ref": "rollback-new",
+                    "container_name": "rollback-new", "flag_hash": "a" * 64,
+                    "flag_path": "/flag.txt", "connection_hint": "ready",
+                    "expiry_minutes": 30,
+                }, headers={"x-internal-token": ctx.token},
+            )
+            assert response.status_code == 503, response.text
+        async with ctx.factory() as db:
+            row = await db.get(LabInstance, rollback_id)
+            assert row.status == "resetting" and row.provider_ref == "rollback-old"
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+                AuditLog.event == "lab.reset",
+                AuditLog.target_id == str(rollback_id),
+            )) == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 async def test_rust_hint_reveals_are_ordered_idempotent_and_audited_atomically(
     live_rust_database, monkeypatch,
 ):

@@ -486,6 +486,40 @@ async def finalize_automatic_lab_expiry_in_rust(
     raise HTTPException(status_code=503, detail="Invalid Rust auto-expiry response")
 
 
+async def transition_lab_reset_in_rust(
+    phase: str, lab_id: str, actor_id: str, roles: list[str],
+    ip_address: str | None, expected_old_ref: str | None,
+    **fields,
+) -> str:
+    """Guard a reset claim, final success, or failure with Rust-owned audit."""
+    expected_success = {
+        "begin": {"claimed"},
+        "complete": {"completed", "already_completed"},
+        "fail": {"failed"},
+    }
+    if phase not in expected_success:
+        raise ValueError("Invalid lab reset phase")
+    result = await _post(f"/v1/labs/reset/{phase}", {
+        "lab_id": lab_id, "actor_id": actor_id, "roles": roles,
+        "ip_address": ip_address, "expected_old_ref": expected_old_ref,
+        **fields,
+    })
+    if not isinstance(result, dict) or set(result) != {"outcome"}:
+        raise HTTPException(status_code=503, detail="Invalid Rust reset response")
+    outcome = result["outcome"]
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Lab not found")
+    if outcome == "unavailable":
+        raise HTTPException(status_code=409, detail="Lab state changed during reset")
+    if outcome == "stale_provider":
+        raise HTTPException(status_code=409, detail="Lab provider changed during reset")
+    if outcome == "provider_missing":
+        raise HTTPException(status_code=503, detail="Lab provider reference is missing")
+    if outcome not in expected_success[phase]:
+        raise HTTPException(status_code=503, detail="Invalid Rust reset response")
+    return outcome
+
+
 async def claim_provisioning_job_in_rust(job_id: str) -> bool:
     """Claim one pending job and its queued lab atomically before provider I/O."""
     result = await _post("/v1/labs/provisioning/claim", {"job_id": job_id})
