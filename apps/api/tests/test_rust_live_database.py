@@ -972,6 +972,157 @@ async def test_rust_lab_terminal_expiry_and_admin_termination_are_atomic(
         app.dependency_overrides.pop(get_current_user, None)
 
 
+async def test_rust_auto_expiry_sweep_rechecks_lease_handle_and_audit(
+    live_rust_database, monkeypatch,
+):
+    """Real Rust expiry writer, mocked provider; provisioning timeout stays Python."""
+    from app.services import labs
+
+    ctx = live_rust_database
+    owner_id, _, challenge_id, _, _ = ctx.seeded
+    settings = SimpleNamespace(
+        rust_core_url=ctx.rust_url, rust_core_shared_token=ctx.token,
+        lab_provisioning_timeout_minutes=15,
+    )
+    monkeypatch.setattr(rust_engine, "get_settings", lambda: settings)
+    monkeypatch.setattr(labs, "get_settings", lambda: settings)
+    provider = SimpleNamespace(stop_lab=AsyncMock(return_value=None))
+    monkeypatch.setattr(labs, "_lab_provider_for", lambda _lab: provider)
+    now = datetime.now(UTC)
+    async with ctx.factory() as db:
+        overdue = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="overdue-host",
+            expires_at=now - timedelta(minutes=5),
+        )
+        fresh = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="fresh-host",
+            expires_at=now + timedelta(hours=1),
+        )
+        no_ref = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", expires_at=now - timedelta(minutes=5),
+        )
+        provisioning = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="provisioning",
+            provider="docker", created_at=now - timedelta(hours=1),
+        )
+        db.add_all([overdue, fresh, no_ref, provisioning])
+        await db.commit()
+        overdue_id, fresh_id = overdue.id, fresh.id
+        no_ref_id, provisioning_id = no_ref.id, provisioning.id
+
+    url = f"{ctx.rust_url}/v1/labs/expire-auto/finalize"
+    payload = {"lab_id": str(overdue_id), "expected_provider_ref": "overdue-host"}
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        assert (await client.post(url, json=payload)).status_code == 401
+        invalid = await client.post(
+            url, json={**payload, "lab_id": "../invalid"},
+            headers={"x-internal-token": ctx.token},
+        )
+        assert invalid.status_code == 400
+        for update, outcome in [
+            ({"expected_provider_ref": "old-host"}, "stale_provider"),
+            ({"lab_id": str(fresh_id), "expected_provider_ref": "fresh-host"}, "not_due"),
+        ]:
+            result = await client.post(
+                url, json={**payload, **update},
+                headers={"x-internal-token": ctx.token},
+            )
+            assert result.status_code == 200, result.text
+            assert result.json() == {"outcome": outcome}
+
+    async with ctx.factory() as db:
+        assert await labs.expire_stale_labs(db) == 2
+    provider.stop_lab.assert_awaited_once_with("overdue-host")
+    async with ctx.factory() as db:
+        assert await labs.expire_stale_labs(db) == 0
+        assert (await db.get(LabInstance, overdue_id)).status == "expired"
+        assert (await db.get(LabInstance, fresh_id)).status == "running"
+        assert (await db.get(LabInstance, no_ref_id)).status == "running"
+        assert (await db.get(LabInstance, provisioning_id)).status == "failed"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.expire_auto",
+            AuditLog.target_id == str(overdue_id),
+        )) == 1
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.provisioning_timeout",
+            AuditLog.target_id == str(provisioning_id),
+        )) == 1
+
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        result = await client.post(
+            url, json=payload, headers={"x-internal-token": ctx.token},
+        )
+        assert result.status_code == 200
+        assert result.json() == {"outcome": "not_running"}
+
+    # Exercise the writer SQL under a column-limited role.
+    role = f"cyberlab_auto_expire_probe_{uuid.uuid4().hex[:10]}"
+    async with ctx.factory() as db:
+        try:
+            await db.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+            await db.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+            await db.execute(text(
+                "GRANT SELECT (id, user_id, status, expires_at, "
+                "provider_ref, container_id) "
+                f'ON lab_instances TO "{role}"'
+            ))
+            await db.execute(text(
+                'GRANT UPDATE (status, updated_at) '
+                f'ON lab_instances TO "{role}"'
+            ))
+            await db.execute(text(
+                'GRANT INSERT (id, event, user_id, target_id) '
+                f'ON audit_logs TO "{role}"'
+            ))
+            await db.execute(text(f'SET LOCAL ROLE "{role}"'))
+            row = (await db.execute(text(
+                'SELECT user_id::text, status, COALESCE(provider_ref, container_id), '
+                'COALESCE(expires_at < now(), false) '
+                'FROM lab_instances WHERE id = :lab_id FOR UPDATE'
+            ), {"lab_id": fresh_id})).one()
+            assert row == (str(owner_id), "running", "fresh-host", False)
+            await db.execute(text(
+                "UPDATE lab_instances SET status = 'expired', updated_at = now() "
+                "WHERE id = :lab_id"
+            ), {"lab_id": fresh_id})
+            await db.execute(text(
+                "INSERT INTO audit_logs (id, event, user_id, target_id) "
+                "VALUES (gen_random_uuid(), 'lab.expire_auto', :uid, :lid)"
+            ), {"uid": owner_id, "lid": str(fresh_id)})
+        finally:
+            await db.rollback()
+
+    async with ctx.factory() as db:
+        rollback_lab = LabInstance(
+            user_id=owner_id, challenge_id=challenge_id, status="running",
+            provider="docker", provider_ref="rollback-expiry-host",
+            expires_at=now - timedelta(minutes=5),
+        )
+        db.add(rollback_lab)
+        await db.commit()
+        rollback_id = rollback_lab.id
+        await db.execute(text(
+            "ALTER TABLE audit_logs ADD CONSTRAINT block_auto_expiry "
+            "CHECK (event <> 'lab.expire_auto') NOT VALID"
+        ))
+        await db.commit()
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        result = await client.post(url, json={
+            "lab_id": str(rollback_id),
+            "expected_provider_ref": "rollback-expiry-host",
+        }, headers={"x-internal-token": ctx.token})
+        assert result.status_code == 503
+    async with ctx.factory() as db:
+        assert (await db.get(LabInstance, rollback_id)).status == "running"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.event == "lab.expire_auto",
+            AuditLog.target_id == str(rollback_id),
+        )) == 0
+
+
 async def test_rust_hint_reveals_are_ordered_idempotent_and_audited_atomically(
     live_rust_database, monkeypatch,
 ):

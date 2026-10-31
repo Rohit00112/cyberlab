@@ -41,6 +41,9 @@ use cyberlab_security_core::competition_writes::{
 use cyberlab_security_core::creation::{create, CreateRequest, CreateResponse};
 use cyberlab_security_core::editing::{edit, EditRequest};
 use cyberlab_security_core::hints::{reveal as reveal_hint, HintRevealRequest, HintRevealResponse};
+use cyberlab_security_core::lab_auto_expiry::{
+    finalize as finalize_automatic_lab_expiry, AutoLabExpiryRequest, AutoLabExpiryResponse,
+};
 use cyberlab_security_core::lab_leases::{
     extend as extend_lab_lease, LabExtendRequest, LabExtendResponse,
 };
@@ -615,6 +618,26 @@ async fn finalize_lab_terminal_route(
     }
 }
 
+async fn finalize_automatic_lab_expiry_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AutoLabExpiryRequest>,
+) -> Result<Json<AutoLabExpiryResponse>, StatusCode> {
+    if !authorized(&headers, &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pool = state
+        .write_database
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    match finalize_automatic_lab_expiry(pool, &payload).await {
+        Ok(result) => Ok(Json(result)),
+        Err(PublishError::Invalid) => Err(StatusCode::BAD_REQUEST),
+        Err(PublishError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(PublishError::Database) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
 async fn claim_provisioning_job_route(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -760,6 +783,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/labs/terminal/finalize",
             post(finalize_lab_terminal_route),
+        )
+        .route(
+            "/v1/labs/expire-auto/finalize",
+            post(finalize_automatic_lab_expiry_route),
         )
         .route(
             "/v1/labs/provisioning/claim",

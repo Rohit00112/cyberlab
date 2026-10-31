@@ -465,6 +465,27 @@ async def finalize_lab_terminal_in_rust(
         raise HTTPException(status_code=503, detail="Invalid Rust lab response")
 
 
+async def finalize_automatic_lab_expiry_in_rust(
+    lab_id: str, expected_provider_ref: str,
+) -> bool:
+    """Commit a confirmed, still-overdue provider shutdown in Rust.
+
+    Returns False if the lease, status, or resource changed before the lock.
+    Never falls back to a Python status write when the Rust core is enabled.
+    """
+    result = await _post("/v1/labs/expire-auto/finalize", {
+        "lab_id": lab_id, "expected_provider_ref": expected_provider_ref,
+    })
+    if not isinstance(result, dict) or set(result) != {"outcome"}:
+        raise HTTPException(status_code=503, detail="Invalid Rust auto-expiry response")
+    outcome = result["outcome"]
+    if outcome == "expired":
+        return True
+    if outcome in {"not_found", "not_running", "stale_provider", "not_due"}:
+        return False
+    raise HTTPException(status_code=503, detail="Invalid Rust auto-expiry response")
+
+
 async def claim_provisioning_job_in_rust(job_id: str) -> bool:
     """Claim one pending job and its queued lab atomically before provider I/O."""
     result = await _post("/v1/labs/provisioning/claim", {"job_id": job_id})

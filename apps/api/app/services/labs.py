@@ -576,6 +576,37 @@ async def expire_stale_labs(db: AsyncSession) -> int:
     now = datetime.now(UTC)
     settings = get_settings()
     rows = (await db.scalars(select(LabInstance))).all()
+    if settings.rust_core_url:
+        from app.core.rust_engine import finalize_automatic_lab_expiry_in_rust
+
+        # Copy all required ORM/provider fields before closing the read
+        # transaction: SQLAlchemy expires ORM snapshots after rollback.
+        due = []
+        for lab in rows:
+            if (
+                lab.status == "running"
+                and lab.expires_at
+                and now > lab.expires_at.replace(tzinfo=UTC)
+            ):
+                ref = lab.provider_ref or lab.container_id
+                if ref:
+                    due.append((str(lab.id), ref, _lab_provider_for(lab)))
+        await db.rollback()
+        for lab_id, ref, provider in due:
+            try:
+                await provider.stop_lab(ref)
+            except (DockerError, LabProviderError):
+                # The caller can safely retry on the next sweep.
+                continue
+            if await finalize_automatic_lab_expiry_in_rust(lab_id, ref):
+                changed += 1
+        # Provisioning timeouts still use their own Python transaction. Reload
+        # only those rows, instead of touching rollback-expired ORM snapshots.
+        rows = (
+            await db.scalars(
+                select(LabInstance).where(LabInstance.status == "provisioning")
+            )
+        ).all()
     for lab in rows:
         if (
             lab.status == "running"

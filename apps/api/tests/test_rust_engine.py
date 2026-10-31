@@ -165,6 +165,39 @@ async def test_lab_terminal_adapter_blocks_unknown_action():
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome, expected", [
+    ("expired", True),
+    ("not_due", False),
+    ("not_running", False),
+    ("stale_provider", False),
+    ("not_found", False),
+])
+async def test_auto_expiry_adapter_handles_expected_outcomes(outcome, expected):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value={
+        "outcome": outcome,
+    })) as send:
+        assert await rust_engine.finalize_automatic_lab_expiry_in_rust(
+            str(uuid.uuid4()), "guest-1",
+        ) is expected
+        assert send.await_args.args[0] == "/v1/labs/expire-auto/finalize"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    {"outcome": "expired", "current_status": "running"},
+    {"outcome": "unexpected"},
+    ["expired"],
+])
+async def test_auto_expiry_adapter_rejects_malformed_responses(payload):
+    with patch.object(rust_engine, "_post", new=AsyncMock(return_value=payload)):
+        with pytest.raises(HTTPException) as error:
+            await rust_engine.finalize_automatic_lab_expiry_in_rust(
+                str(uuid.uuid4()), "guest-1",
+            )
+        assert error.value.status_code == 503
+
+
 async def _seed_user_and_challenge(factory):
     async with factory() as db:
         user = User(
