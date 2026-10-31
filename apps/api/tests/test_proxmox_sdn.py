@@ -68,6 +68,52 @@ def test_sdn_pool_accepts_valid_private_subnet():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("second_cidr", [
+    "10.211.2.0/24",
+    "10.211.1.0/24",
+    "203.0.113.0/24",
+])
+async def test_pool_launch_rechecks_every_subnet_before_cloning(monkeypatch, second_cidr):
+    settings = _sdn_settings("").model_copy(update={
+        "lab_provider": "proxmox", "environment": "development",
+        "proxmox_sdn_vnet_pool": "clab001,clab002",
+    })
+    monkeypatch.setattr(proxmox, "get_settings", lambda: settings)
+    provider = proxmox.ProxmoxLabProvider()
+    paths = []
+
+    async def request(method, path, **_kwargs):
+        assert method == "GET"
+        paths.append(path)
+        if path == "/api2/json/cluster/sdn/vnets/clab001":
+            return {"vnet": "clab001", "zone": "clabzone"}
+        if path == f"/api2/json/nodes/{provider.node}/sdn/zones":
+            return [{"zone": "clabzone", "status": "available"}]
+        if path == f"/api2/json/nodes/{provider.node}/sdn/zones/clabzone/bridges":
+            return [{"name": "clab001"}]
+        if path == "/api2/json/cluster/sdn/vnets/clab001/subnets":
+            return _subnet("10.211.1.0/24", "10.211.1.1")
+        if path == "/api2/json/cluster/sdn/vnets/clab002/subnets":
+            gateway = second_cidr.split(".")[:3]
+            return _subnet(second_cidr, ".".join(gateway) + ".1")
+        raise AssertionError(f"Unexpected Proxmox API call: {path}")
+
+    monkeypatch.setattr(provider, "_request", request)
+    if second_cidr == "10.211.2.0/24":
+        await provider.ensure_network("clab001")
+    else:
+        with pytest.raises(proxmox.ProxmoxError) as excinfo:
+            await provider.create_lab("lab-test", "9002", "clab001")
+        assert excinfo.value.__cause__ is not None
+        assert ("overlap" if second_cidr.startswith("10.") else "invalid subnet") in (
+            str(excinfo.value.__cause__)
+        )
+    assert "/api2/json/cluster/sdn/vnets/clab001/subnets" in paths
+    assert "/api2/json/cluster/sdn/vnets/clab002/subnets" in paths
+    assert "/api2/json/cluster/nextid" not in paths
+
+
+@pytest.mark.asyncio
 async def test_staging_pool_reservations_are_exclusive_and_never_auto_reused(monkeypatch):
     settings = _sdn_settings("").model_copy(update={
         "lab_provider": "proxmox", "proxmox_sdn_vnet_pool": "clab001,clab002",

@@ -245,9 +245,18 @@ get connectivity without a reviewed access policy.
 
 The read-only `scripts.proxmox_check` validates every configured pool VNet,
 including its distinct RFC1918 IPv4 subnet, DHCP range, disabled SNAT and
-`SDN.Use` ACL. For a one-VM disposable test on an approved pool VNet, run
-`python -m scripts.proxmox_smoke --run --vnet clab001` after verifying the
-operator-created VNet and explicit VM cleanup authority. In pool mode the
+`SDN.Use` ACL. The provider also checks all pool-member subnets at VM launch,
+refusing the clone if a member becomes invalid or overlaps another subnet
+since the readiness check. This is a configuration safeguard, not proof of
+firewall or VPN isolation. For a one-VM disposable test on an approved pool
+VNet, after verifying the operator-created VNet and explicit VM cleanup
+authority, run from `apps/api`:
+
+```bash
+uv run python -m scripts.proxmox_smoke --run --vnet clab001
+```
+
+In pool mode the
 smoke test refuses to clone without `--vnet` and never falls back to `vmbr0`
 or the shared staging bridge. This remains a provisioning test only; it does
 not establish student-to-student or WireGuard access isolation.

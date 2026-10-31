@@ -225,10 +225,11 @@ class ProxmoxLabProvider(LabProvider):
             ) from exc
 
     async def ensure_network(self, name: str) -> None:
-        """Require an existing staging bridge before any VM is created.
+        """Require a pre-created, applied staging network before VM allocation.
 
-        The per-user name is only a Docker network identifier. Proxmox guests
-        currently share one bridge/VNet, so this must not be used in production.
+        Pooled guests use their exclusively reserved VNet. Without a pool,
+        guests still share the configured bridge/VNet; neither option permits
+        production launches until actual VPN/firewall isolation is verified.
         """
         if self.sdn_pool:
             if name not in self.sdn_pool:
@@ -286,13 +287,29 @@ class ProxmoxLabProvider(LabProvider):
             ):
                 raise ProxmoxError("SDN VNet bridge is not active in its zone")
             if self.sdn_pool:
-                subnets = await self._request(
-                    "GET", f"/api2/json/cluster/sdn/vnets/{vnet}/subnets"
-                )
-                try:
-                    validate_pool_subnet(subnets)
-                except ValueError as exc:
-                    raise ProxmoxError(str(exc)) from exc
+                # The launch path must recheck the *whole* operator-managed
+                # pool, not just this student's bridge. A later SDN change
+                # could overlap an existing student's subnet after the
+                # read-only deployment readiness check was last run.
+                seen_subnets = {}
+                for member in self.sdn_pool:
+                    member_id = quote(member, safe="")
+                    subnets = await self._request(
+                        "GET", f"/api2/json/cluster/sdn/vnets/{member_id}/subnets"
+                    )
+                    try:
+                        subnet = validate_pool_subnet(subnets)
+                    except ValueError as exc:
+                        raise ProxmoxError(
+                            f"SDN pool member {member!r} has an invalid subnet: {exc}"
+                        ) from exc
+                    for other_member, other_subnet in seen_subnets.items():
+                        if subnet.overlaps(other_subnet):
+                            raise ProxmoxError(
+                                f"SDN pool subnet overlap: {member!r} ({subnet}) "
+                                f"and {other_member!r} ({other_subnet})"
+                            )
+                    seen_subnets[member] = subnet
         except ProxmoxError as exc:
             raise ProxmoxError(
                 f"Proxmox SDN VNet {vnet_name!r} is not configured and applied "
