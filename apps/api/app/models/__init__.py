@@ -16,6 +16,7 @@ from app.models.learning_paths import LearningPath, LearningPathStep  # noqa: F4
 from app.models.machine_templates import MachineTemplate, MachineTemplateVersion  # noqa: F401
 from app.models.notifications import Announcement, Notification  # noqa: F401
 from app.models.provisioning import ComputeNode, ProvisioningJob, ResourceReservation  # noqa: F401
+from app.models.proxmox_sdn_leases import ProxmoxSdnLease  # noqa: F401
 from app.models.research import (  # noqa: F401
     RecommendationLog,
     ResearchDataset,

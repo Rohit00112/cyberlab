@@ -31,6 +31,8 @@ if str(API_DIR) not in sys.path:
 import httpx
 
 from app.core.config import get_settings
+from app.core.proxmox_sdn import parse_vnet_pool, validate_pool_subnet
+from app.infrastructure.proxmox_http import make_proxmox_async_client
 
 STATUS = {"ok", "warn", "fail"}
 
@@ -52,7 +54,17 @@ class ProxmoxCheck:
         self.api_url = self.settings.proxmox_endpoint.rstrip("/")
         self.node = self.settings.proxmox_node
         self.storage = self.settings.proxmox_storage
-        self.bridge = self.settings.proxmox_bridge
+        self.sdn_vnet = getattr(self.settings, "proxmox_sdn_vnet", "").strip()
+        self.pool_error: str | None = None
+        try:
+            self.sdn_pool = parse_vnet_pool(
+                getattr(self.settings, "proxmox_sdn_vnet_pool", "")
+            )
+        except ValueError as exc:
+            self.sdn_pool = ()
+            self.pool_error = str(exc)
+        self.sdn_zones: dict[str, str] = {}
+        self.bridge = self.sdn_vnet or self.settings.proxmox_bridge
         self.template_vmid = str(self.settings.lab_image)
         self.headers = {
             "Authorization": (
@@ -66,8 +78,10 @@ class ProxmoxCheck:
         self.results.append((status, label, detail))
 
     async def _get(self, path: str, request_timeout: float = 10.0) -> httpx.Response:
-        async with httpx.AsyncClient(
-            verify=self.settings.proxmox_verify_ssl, timeout=request_timeout
+        async with make_proxmox_async_client(
+            verify_ssl=self.settings.proxmox_verify_ssl,
+            timeout=request_timeout,
+            force_ipv6=getattr(self.settings, "proxmox_force_ipv6", False),
         ) as client:
             response = await client.get(
                 f"{self.api_url}/api2/json{path}", headers=self.headers
@@ -105,8 +119,15 @@ class ProxmoxCheck:
                 },
             ))
         for bridge in sorted(bridges or {self.bridge}):
+            if bridge in (*self.sdn_pool, self.sdn_vnet) and bridge not in self.sdn_zones:
+                self._serve(
+                    "perm-bridge", "fail",
+                    f"'{bridge}': SDN VNet zone cannot be verified",
+                )
+                continue
+            zone = self.sdn_zones.get(bridge, "localnetwork")
             checks.append((
-                "perm-bridge", f"/sdn/zones/localnetwork/{bridge}", {"SDN.Use"},
+                "perm-bridge", f"/sdn/zones/{zone}/{bridge}", {"SDN.Use"},
             ))
 
         for label, path, required in checks:
@@ -135,6 +156,22 @@ class ProxmoxCheck:
                 f"LAB_PROVIDER={self.settings.lab_provider} — skipping Proxmox checks."
             )
             return 0
+
+        if getattr(self.settings, "is_production", False):
+            self._serve(
+                "isolation", "fail",
+                "Production Proxmox VM launch is disabled: the configured "
+                "bridge/VNet is shared; per-user SDN and VPN/firewall "
+                "enforcement have not been implemented",
+            )
+            return self._print_and_exit()
+
+        if self.pool_error or (self.sdn_pool and self.sdn_vnet):
+            self._serve(
+                "sdn-pool", "fail",
+                self.pool_error or "SDN VNet pool conflicts with shared staging VNet",
+            )
+            return self._print_and_exit()
 
         if self.api_url.startswith("http://"):
             self._serve(
@@ -205,20 +242,80 @@ class ProxmoxCheck:
 
         # Bridge
         try:
-            ifaces = self._data(await self._get(f"/nodes/{self.node}/network"))
-            bridge = next(
-                (i for i in ifaces if i.get("iface") == self.bridge), None
-            )
-            if bridge is None:
-                self._serve(
-                    "bridge", "fail",
-                    f"'{self.bridge}' not present on node "
-                    f"({', '.join(str(i.get('iface')) for i in ifaces) or 'none'})",
-                )
+            if self.sdn_vnet or self.sdn_pool:
+                seen_subnets = {}
+                for vnet_name in self.sdn_pool or (self.sdn_vnet,):
+                    try:
+                        vnet = self._data(await self._get(
+                            f"/cluster/sdn/vnets/{quote(vnet_name, safe='')}"
+                        ))
+                        if (
+                            not isinstance(vnet, dict)
+                            or vnet.get("vnet") != vnet_name
+                            or not isinstance(vnet.get("zone"), str)
+                            or not re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", vnet["zone"]
+                            )
+                        ):
+                            raise RuntimeError("SDN VNet is missing or malformed")
+                        zone = vnet["zone"]
+                        statuses = self._data(await self._get(
+                            f"/nodes/{self.node}/sdn/zones"
+                        ))
+                        if not isinstance(statuses, list) or not any(
+                            isinstance(item, dict)
+                            and item.get("zone") == zone
+                            and item.get("status") == "available"
+                            for item in statuses
+                        ):
+                            raise RuntimeError(f"SDN zone '{zone}' not available on node")
+                        bridges = self._data(await self._get(
+                            f"/nodes/{self.node}/sdn/zones/{quote(zone, safe='')}/bridges"
+                        ))
+                        if not isinstance(bridges, list) or not any(
+                            isinstance(item, dict) and item.get("name") == vnet_name
+                            for item in bridges
+                        ):
+                            raise RuntimeError(f"SDN bridge '{vnet_name}' is not active")
+                        if self.sdn_pool:
+                            subnet_rows = self._data(await self._get(
+                                f"/cluster/sdn/vnets/{quote(vnet_name, safe='')}/subnets"
+                            ))
+                            try:
+                                subnet = validate_pool_subnet(subnet_rows)
+                            except ValueError as exc:
+                                raise RuntimeError(str(exc)) from exc
+                            for other_vnet, other_subnet in seen_subnets.items():
+                                if subnet.overlaps(other_subnet):
+                                    raise RuntimeError(
+                                        f"Subnet {subnet} overlaps VNet '{other_vnet}'"
+                                    )
+                            seen_subnets[vnet_name] = subnet
+                        self.sdn_zones[vnet_name] = zone
+                        self._serve(
+                            "bridge", "ok",
+                            f"'{vnet_name}' (SDN zone={zone}, available)",
+                        )
+                    except (httpx.HTTPError, RuntimeError) as exc:
+                        self._serve(
+                            "bridge", "fail", f"{vnet_name}: {_describe_error(exc)}"
+                        )
             else:
-                self._serve(
-                    "bridge", "ok", f"'{self.bridge}' (type={bridge.get('type')})"
+                ifaces = self._data(await self._get(f"/nodes/{self.node}/network"))
+                bridge = next(
+                    (i for i in ifaces if i.get("iface") == self.bridge), None
                 )
+                if bridge is None:
+                    self._serve(
+                        "bridge", "fail",
+                        f"'{self.bridge}' not present on node "
+                        f"({', '.join(str(i.get('iface')) for i in ifaces) or 'none'})",
+                    )
+                else:
+                    self._serve(
+                        "bridge", "ok",
+                        f"'{self.bridge}' (type={bridge.get('type')}, zone=localnetwork)",
+                    )
         except (httpx.HTTPError, RuntimeError) as exc:
             self._serve("bridge", "fail", _describe_error(exc))
 
@@ -270,7 +367,7 @@ class ProxmoxCheck:
         # Proxmox checks SDN.Use for both the template's inherited NICs and
         # the replacement bridge configured after cloning. Plain vmbr bridges
         # belong to the implicit localnetwork zone.
-        bridges = {self.bridge}
+        bridges = set(self.sdn_pool or (self.bridge,))
         try:
             if not re.fullmatch(r"[1-9][0-9]{2,8}", self.template_vmid):
                 raise RuntimeError("LAB_IMAGE must be a numeric Proxmox template VMID")

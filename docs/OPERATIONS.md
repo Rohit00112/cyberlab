@@ -114,6 +114,144 @@ verified should an operator opt into `scripts.proxmox_smoke --run`; that test
 creates and then attempts to remove one owned disposable clone. Never run the
 live smoke test as part of the normal Python unit suite.
 
+### Proxmox endpoint accessible only over IPv6
+
+If a Proxmox hostname works with `curl -6` but hangs with `curl -4`, the API
+container may be selecting an unusable IPv4 route. CyberLab normally uses the
+default dual-stack-capable HTTPX behavior and an IPv4 Compose bridge. The
+optional `docker-compose.proxmox-ipv6.yml` overlay adds a separate IPv6 bridge
+to only the API and worker, preserving the default IPv4 inter-service network
+and DNS aliases. It also sets `PROXMOX_FORCE_IPV6=true` on those two services.
+Both are required: enabling an IPv6 network alone does not force HTTPX
+away from a broken IPv4 address. TLS verification remains controlled by
+`PROXMOX_VERIFY_SSL`, and must remain enabled in production.
+
+Validate the configuration without modifying running services:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.proxmox-ipv6.yml config --quiet
+```
+
+Applying the overlay with `docker compose -f docker-compose.yml -f
+docker-compose.proxmox-ipv6.yml up -d` **recreates the API and worker** but
+should leave the default Compose network and other services unchanged. Confirm
+the proposed changes and arrange a short API maintenance window. Removing the
+overlay and running the base Compose file again returns those two services to
+their usual network configuration. When using a
+different network or an IPv6-only internal endpoint, ensure Docker hosts and
+upstream firewalls have outbound IPv6 routing before enabling this option.
+
+On a cold clone, Cloud-Init and the guest operating system can take time to
+start the QEMU guest agent, especially on an isolated bridge without DHCP.
+`PROXMOX_AGENT_WAIT_SECONDS` defaults to 300 seconds (30–900 supported),
+matching the template builder's default. A timeout still fails provisioning;
+it does not mean a nonresponsive guest flag was successfully installed.
+
+Proxmox flag provisioning waits for a QEMU guest-agent ping, then writes the
+per-lab flag using the guest-agent `file-write` API and verifies the exact
+contents using `file-read`. This avoids relying on short-lived guest-exec
+process IDs. The target directory must already exist in the template and be
+writable by the guest agent. Missing permissions, a failed write, mismatched
+read-back, or a guest-agent timeout abort provisioning; the lab must never be
+reported ready without a verified flag. The Proxmox API token must have the
+guest-agent file operation permissions (`VM.GuestAgent.Unrestricted` on PVE 9).
+
+Staging network verification (October 31): template VMID `9002` uses
+`ipconfig0=ip=dhcp`. An earlier disposable guest on the isolated `vmbr1` had
+no assigned IP (`pending`), but its guest-agent flag verification passed and
+its VMID was removed. After activating the SDN VNet below, a new disposable
+guest on `clabnet1` received `10.210.0.100`, passed guest-agent flag
+`file-write`/`file-read` verification, and was removed with VMID `103`
+confirmed absent. This proves guest address allocation on the staging VNet,
+**not** VPN reachability or per-student security isolation. Do not attach the
+isolated bridge to a public interface to provide connectivity.
+
+### Proxmox SDN isolated staging VNet (activated, staging only)
+
+The operator created and applied zone `clabzone` and VNet `clabnet1` on node
+`com`. The node reports `clabnet1` with gateway `10.210.0.1/24`; systemd
+reports `dnsmasq@clabzone` active. The live authenticated readiness check
+passed for the zone, applied bridge, template, storage and SDN token ACLs.
+The application supports an optional existing VNet via `PROXMOX_SDN_VNET`
+(default empty, preserving the working `PROXMOX_BRIDGE`). It verifies the
+cluster VNet, the zone's `available` status on the node and the applied bridge
+at `/nodes/{node}/sdn/zones/{zone}/bridges` before allocating a guest, then
+uses the VNet for `net0`. Readiness also requires `SDN.Use` permission for the
+VNet and the template's original bridge. The application does **not** create
+or apply SDN resources automatically.
+
+Applied staging configuration (verify no overlap with management LANs, VPN
+ranges, other networks or existing routes before widening access):
+
+1. In **Datacenter → SDN → Zones**, create a **Simple** zone `clabzone` scoped
+   to node `com`; use built-in PVE IPAM, and enable the `dnsmasq` DHCP backend
+   only after installing and preparing `dnsmasq` on the node according to the
+   Proxmox SDN guide.
+2. Under **VNets**, create `clabnet1` in zone `clabzone` (Proxmox VNet
+   identifiers are limited to eight characters).
+3. Define a non-overlapping subnet; candidate **10.210.0.0/24** with gateway
+   `10.210.0.1` and DHCP pool `10.210.0.100`–`10.210.0.199`. Keep it
+   isolated, with SNAT/public routing disabled for the initial test.
+4. The operator applied the cluster-wide SDN configuration. A read-only
+   readiness check and one isolated `scripts.proxmox_smoke --run` were
+   successful using temporary `PROXMOX_SDN_VNET=clabnet1` overrides. To opt
+   in persistently, set `PROXMOX_SDN_VNET=clabnet1` in the API and worker
+   environment after reviewing the rollout and restart plan.
+
+Proxmox's built-in SDN DHCP/IPAM integration is still designated **tech
+preview**. Confirm the installed version's backend and implement monitoring
+and a recovery plan before relying on DHCP for production labs. Crucially,
+one staging VNet **is a shared L2 segment**; it is **not** production-grade
+per-student isolation. Multiple untrusted students must use separately
+isolated lab networks or a fully validated firewall policy, with VPN routing
+restricted to each assigned lab and no access to Proxmox management.
+The current Proxmox provider now deliberately rejects production-mode lab
+provisioning until this isolation and routing enforcement is implemented; its
+staging connection hint explicitly identifies the VNet as shared. Do not
+interpret successful SDN DHCP or guest flag installation as authorization to
+enable student-facing VMs.
+
+#### Opt-in pool of operator-created staging VNets
+
+The application also supports `PROXMOX_SDN_VNET_POOL=clab001,clab002` as an
+**alternative** to the shared `PROXMOX_SDN_VNET` setting (never set both).
+These example VNet IDs do not exist until an operator creates, configures and
+applies them. Each requires its own non-overlapping subnet, IPAM/DHCP range,
+appropriate SDN.Use token ACL, and an independently checked host firewall and
+VPN routing policy. In particular, separate L2 VNets do **not** by themselves
+prevent routing between their IP subnets on the Proxmox host.
+
+When a pool is configured, a PostgreSQL transaction-scoped advisory lock
+serializes reservations by user across API workers. The network name stored
+with the lab is the chosen VNet, which the Proxmox provider verifies against
+the allowed pool and live applied SDN bridges before cloning. Both queued and
+synchronous launches reserve a network before committing their lab record;
+subsequent labs for the same user reuse the reserved VNet. The allocator
+persists reservations in `proxmox_sdn_leases`, a separate table with **no user
+foreign-key cascade**. First use also backfills matching historical lab
+assignments before reserving a new VNet. This ledger survives removal of lab
+history and user accounts. Apply Alembic migrations before enabling the pool.
+The allocator **never automatically reuses a leased VNet**, including after
+failed, expired or terminated labs, because stopped or orphaned VMs may still
+exist. Exhaustion fails closed instead of reassigning another student's
+network. Operators must verify that all previous guests, IPAM leases,
+forwarding rules and credentials are gone before any audited manual reclaim.
+Automated cleanup verification is still required for production-grade reuse.
+
+The pool feature and `clabnet1` remain **staging-only**: the production-mode
+Proxmox block stays in effect until end-to-end enforcement and negative
+cross-student connectivity tests pass. Do not modify `vmbr0` or enable SNAT to
+get connectivity without a reviewed access policy.
+
+The read-only `scripts.proxmox_check` validates every configured pool VNet,
+including its distinct RFC1918 IPv4 subnet, DHCP range, disabled SNAT and
+`SDN.Use` ACL. For a one-VM disposable test on an approved pool VNet, run
+`python -m scripts.proxmox_smoke --run --vnet clab001` after verifying the
+operator-created VNet and explicit VM cleanup authority. In pool mode the
+smoke test refuses to clone without `--vnet` and never falls back to `vmbr0`
+or the shared staging bridge. This remains a provisioning test only; it does
+not establish student-to-student or WireGuard access isolation.
+
 ## Observability (PRD §47)
 
 - Every request logs one JSON line (request id, method, path, status, duration).

@@ -1,7 +1,9 @@
 """Lab instance model. One row per provisioned per-user lab (Phase 2).
 
-Labs are isolated per user (dedicated bridge network) and only reachable
-through the CyberLab API — never through a direct infrastructure handle.
+Docker labs use per-user isolated networks. Proxmox currently has staging-only
+shared-VNet or pre-created VNet-pool options; neither grants production access
+until inter-VNet firewall and per-student VPN routing are enforced. Provider
+handles must never be exposed as direct student infrastructure credentials.
 """
 from __future__ import annotations
 

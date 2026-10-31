@@ -54,7 +54,7 @@ def lab_flag_command(flag_path: str, flag: str) -> list[str]:
 
 
 def guest_flag_command(flag_path: str, flag: str) -> list[str]:
-    """Short-lived Linux VM initializer; the guest agent must observe exit 0."""
+    """Describe a Linux VM flag write for guest-agent file APIs."""
     return [
         "/bin/sh", "-c",
         f"printf '%s\\n' {shlex.quote(flag)} > {shlex.quote(flag_path)}",
@@ -73,6 +73,31 @@ def validate_guest_flag_command(cmd: list[str]) -> None:
         or len(cmd[2]) > 1000
     ):
         raise ValueError("Only the built-in guest flag initializer may run")
+
+
+def guest_flag_write_data(cmd: list[str]) -> tuple[str, str]:
+    """Extract a file path and exact flag content from the one-shot writer.
+
+    Parse shell quoting without evaluating shell code, so hypervisor file APIs
+    never receive an unvalidated arbitrary path or arbitrary command.
+    """
+    validate_guest_flag_command(cmd)
+    try:
+        args = shlex.split(cmd[2])
+    except ValueError as exc:
+        raise ValueError("Invalid guest flag initializer quoting") from exc
+    if (
+        len(args) != 5
+        or args[:2] != ["printf", r"%s\n"]
+        or args[3] != ">"
+        or not args[2]
+        or not args[4].startswith("/")
+        or ".." in args[4].split("/")
+        or "\x00" in args[2]
+        or "\x00" in args[4]
+    ):
+        raise ValueError("Only the built-in guest flag initializer may run")
+    return args[4], args[2] + "\n"
 
 
 def slugify(value: str) -> str:

@@ -441,7 +441,7 @@ class TestProxmoxRequest:
     """HTTP-layer regression tests for the Proxmox provider (Track 4)."""
 
     @pytest.mark.asyncio
-    async def test_guest_flag_exec_requires_verified_zero_exit(self, monkeypatch):
+    async def test_guest_flag_file_write_requires_verified_readback(self, monkeypatch):
         from app.core.flags import guest_flag_command
         from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
 
@@ -453,30 +453,30 @@ class TestProxmoxRequest:
             calls.append((method, path, kwargs))
             if path.endswith("/agent/ping"):
                 return {"result": {}}
-            if path.endswith("/agent/exec"):
-                return {"pid": 4242}
-            if path.endswith("/agent/exec-status"):
-                return {"exited": True, "exitcode": 0}
+            if path.endswith("/agent/file-write"):
+                return None
+            if path.endswith("/agent/file-read"):
+                return {"content": "IIC{sample}\n", "bytes-read": 12}
             raise AssertionError(path)
 
         monkeypatch.setattr(provider, "_request", request)
         await provider._install_guest_flag("135", command)
         assert calls[0][0] == "POST" and calls[0][1].endswith("/agent/ping")
-        assert calls[1][2]["params"] == [
-            ("command", "/bin/sh"), ("command", "-c"),
-            ("command", command[2]),
-        ]
-        assert calls[2][2]["params"] == {"pid": 4242}
+        assert calls[1][1].endswith("/agent/file-write")
+        assert calls[1][2]["json_data"] == {
+            "file": "/flag.txt", "content": "IIC{sample}\n",
+        }
+        assert calls[2][2]["params"] == {"file": "/flag.txt"}
 
         async def failed_request(method, path, **kwargs):
             if path.endswith("/agent/ping"):
                 return {"result": {}}
-            if path.endswith("/agent/exec"):
-                return {"pid": 4242}
-            return {"exited": True, "exitcode": 1}
+            if path.endswith("/agent/file-write"):
+                return None
+            return {"content": "wrong flag\n"}
 
         monkeypatch.setattr(provider, "_request", failed_request)
-        with pytest.raises(ProxmoxError, match="exited unsuccessfully"):
+        with pytest.raises(ProxmoxError, match="read-back did not match"):
             await provider._install_guest_flag("135", command)
 
     @pytest.mark.asyncio
@@ -495,10 +495,10 @@ class TestProxmoxRequest:
                 if sum(p.endswith("/agent/ping") for _, p in calls) == 1:
                     raise proxmox.ProxmoxError("QEMU guest agent is not running")
                 return {}
-            if path.endswith("/agent/exec"):
-                return {"pid": 75}
-            if path.endswith("/agent/exec-status"):
-                return {"exited": True, "exitcode": 0}
+            if path.endswith("/agent/file-write"):
+                return None
+            if path.endswith("/agent/file-read"):
+                return {"content": "IIC{sample}\n"}
             raise AssertionError(path)
 
         monkeypatch.setattr(provider, "_request", request)
@@ -507,8 +507,31 @@ class TestProxmoxRequest:
             "135", guest_flag_command("/tmp/flag", "IIC{sample}")
         )
         assert [path.rsplit("/", 1)[-1] for _, path in calls] == [
-            "ping", "ping", "exec", "exec-status",
+            "ping", "ping", "file-write", "file-read",
         ]
+
+    @pytest.mark.asyncio
+    async def test_guest_flag_file_write_error_fails_closed(self, monkeypatch):
+        from app.core.flags import guest_flag_command
+        from app.infrastructure import proxmox
+
+        provider = proxmox.ProxmoxLabProvider()
+        write_calls = []
+
+        async def request(method, path, **kwargs):
+            if path.endswith("/agent/ping"):
+                return {}
+            if path.endswith("/agent/file-write"):
+                write_calls.append(path)
+                raise proxmox.ProxmoxError("Proxmox API returned HTTP 403")
+            raise AssertionError(path)
+
+        monkeypatch.setattr(provider, "_request", request)
+        with pytest.raises(proxmox.ProxmoxError, match="HTTP 403"):
+            await provider._install_guest_flag(
+                "135", guest_flag_command("/tmp/flag", "IIC{sample}")
+            )
+        assert len(write_calls) == 1
 
     @pytest.mark.asyncio
     async def test_flag_initialization_is_required_before_cloning_a_vm(self, monkeypatch):
@@ -521,6 +544,24 @@ class TestProxmoxRequest:
         monkeypatch.setattr(provider, "_request", request)
         with pytest.raises(ProxmoxError, match="cannot install a per-lab challenge flag"):
             await provider.create_lab("flag-lab", "900", "lab-net", cmd=["sh", "-c", "true"])
+        request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_guest_flag_destination_is_rejected_before_cloning(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from app.core.flags import guest_flag_command
+        from app.infrastructure.proxmox import ProxmoxError, ProxmoxLabProvider
+
+        provider = ProxmoxLabProvider()
+        request = AsyncMock(side_effect=AssertionError("VM must not be cloned"))
+        monkeypatch.setattr(provider, "_request", request)
+        for path in ("relative.flag", "/tmp/../flag", "/tmp/flag\x00unsafe"):
+            with pytest.raises(ProxmoxError, match="cannot install a per-lab challenge flag"):
+                await provider.create_lab(
+                    "flag-lab", "900", "lab-net",
+                    cmd=guest_flag_command(path, "IIC{test}"),
+                )
         request.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -690,6 +731,7 @@ class TestProxmoxRequest:
         ({"proxmox_node": "pve/../other"}, "node"),
         ({"proxmox_bridge": "vmbr0,firewall=0"}, "bridge"),
         ({"proxmox_storage": "../other"}, "storage"),
+        ({"proxmox_agent_wait_seconds": 0}, "agent wait"),
     ])
     def test_invalid_proxmox_config_fails_before_any_api_call(
         self, monkeypatch, overrides, expected_error

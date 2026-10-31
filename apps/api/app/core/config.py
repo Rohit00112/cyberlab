@@ -70,14 +70,26 @@ class Settings(BaseSettings):
 
     # Proxmox VE connection (Track 4, only used when lab_provider=proxmox)
     # Env vars: PROXMOX_ENDPOINT, PROXMOX_USER, PROXMOX_TOKEN_UUID,
-    #           PROXMOX_NODE, PROXMOX_STORAGE, PROXMOX_BRIDGE, PROXMOX_VERIFY_SSL
+    #           PROXMOX_NODE, PROXMOX_STORAGE, PROXMOX_BRIDGE,
+    #           PROXMOX_VERIFY_SSL, PROXMOX_FORCE_IPV6,
+    #           PROXMOX_AGENT_WAIT_SECONDS, PROXMOX_SDN_VNET,
+    #           PROXMOX_SDN_VNET_POOL
     proxmox_endpoint: str = "https://localhost:8006"
     proxmox_user: str = ""          # e.g. root@pam!cyberlab
     proxmox_token_uuid: str = ""    # API token UUID
     proxmox_node: str = "pve"
     proxmox_storage: str = "local-lvm"
     proxmox_bridge: str = "vmbr0"
+    # Optional existing, applied SDN VNet for isolated staging labs. This is a
+    # shared VNet, not per-student production isolation.
+    proxmox_sdn_vnet: str = ""
+    # Optional operator-created pool of distinct staging VNets, assigned one
+    # per user. Never combine with PROXMOX_SDN_VNET (single shared VNet).
+    # Production still requires VPN/firewall policy enforcement.
+    proxmox_sdn_vnet_pool: str = ""
     proxmox_verify_ssl: bool = True
+    proxmox_force_ipv6: bool = False
+    proxmox_agent_wait_seconds: int = 300
 
     @property
     def cors_origin_list(self) -> list[str]:

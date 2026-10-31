@@ -1,6 +1,7 @@
 """Opt-in, self-cleaning live Proxmox VM and guest-flag smoke test.
 
 Run from the repository root with LAB_PROVIDER=proxmox and --run.
+For an operator-managed SDN pool, also pass --vnet with one approved VNet.
 This creates exactly one random-named disposable VM and attempts to remove it
 only after the VMID and the clone's identity have both been verified.
 """
@@ -8,8 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import secrets
-import shlex
 import sys
 from pathlib import Path
 
@@ -24,34 +25,14 @@ from scripts.proxmox_check import ProxmoxCheck
 
 
 async def _verify_flag(provider: ProxmoxLabProvider, vmid: str, path: str, flag: str) -> None:
-    """Ask the guest to compare its flag without returning the flag text."""
-    command = [
-        "/bin/sh", "-c",
-        f"test \"$(cat {shlex.quote(path)})\" = {shlex.quote(flag)}",
-    ]
+    """Independently verify the flag without using guest-exec PID polling."""
     base = f"/api2/json/nodes/{provider.node}/qemu/{vmid}/agent"
-    started = await provider._request(
-        "POST", f"{base}/exec", params=[("command", part) for part in command],
+    result = await provider._request(
+        "GET", f"{base}/file-read", params={"file": path},
     )
-    if not isinstance(started, dict):
-        raise RuntimeError("Guest-agent verification returned an invalid response")
-    result = started.get("result", started)
-    pid = result.get("pid") if isinstance(result, dict) else None
-    if not isinstance(pid, int) or pid <= 0:
-        raise RuntimeError("Guest-agent verification returned no process ID")
-    async with asyncio.timeout(45):
-        while True:
-            state = await provider._request(
-                "GET", f"{base}/exec-status", params={"pid": pid},
-            )
-            result = state.get("result", state) if isinstance(state, dict) else None
-            if not isinstance(result, dict):
-                raise RuntimeError("Guest-agent verification status is invalid")
-            if result.get("exited") is True:
-                if result.get("exitcode") != 0:
-                    raise RuntimeError("The guest flag did not match the generated flag")
-                return
-            await asyncio.sleep(1)
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, str) or not hmac.compare_digest(content, flag + "\n"):
+        raise RuntimeError("The guest flag did not match the generated flag")
 
 
 async def _remove_owned_vm(
@@ -83,7 +64,7 @@ async def _remove_owned_vm(
     return True
 
 
-async def _run(execute: bool) -> int:
+async def _run(execute: bool, vnet: str | None = None) -> int:
     settings = get_settings()
     if settings.lab_provider != "proxmox":
         print("Set LAB_PROVIDER=proxmox for this isolated test.", flush=True)
@@ -95,7 +76,21 @@ async def _run(execute: bool) -> int:
         return 0
 
     provider = ProxmoxLabProvider()
-    await provider.ensure_network(provider.bridge)
+    if provider.sdn_pool:
+        if vnet not in provider.sdn_pool:
+            print(
+                "Select a configured pool VNet with --vnet; "
+                "refusing to clone onto the shared bridge",
+                flush=True,
+            )
+            return 2
+        network = vnet
+    else:
+        if vnet is not None:
+            print("--vnet is only valid with PROXMOX_SDN_VNET_POOL", flush=True)
+            return 2
+        network = provider.bridge
+    await provider.ensure_network(network)
     expected_vmid = provider._vmid(await provider._request("GET", "/api2/json/cluster/nextid"))
     before = await provider._request("GET", f"/api2/json/nodes/{provider.node}/qemu")
     if not isinstance(before, list) or any(
@@ -116,7 +111,7 @@ async def _run(execute: bool) -> int:
     )
     try:
         vmid, ip = await provider.create_lab(
-            name, str(settings.lab_image), provider.bridge,
+            name, str(settings.lab_image), network,
             cmd=guest_flag_command(path, flag),
             cpu_limit=1, memory_limit_mb=1024,
         )
@@ -145,5 +140,6 @@ async def _run(execute: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="clone, test and remove one VM")
+    parser.add_argument("--vnet", help="approved VNet for a disposable SDN pool test")
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(_run(args.run)))
+    raise SystemExit(asyncio.run(_run(args.run, args.vnet)))

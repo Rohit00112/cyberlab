@@ -2,6 +2,32 @@
 
 ## Current delivery
 
+Entries are chronological milestones with newest updates first; older notes
+about a missing Proxmox guest-agent template or absent live Proxmox testing
+describe the state at that time and are superseded by the verified milestone below.
+
+October 31 live Proxmox IPv6 and flag verification (staging, deployed): The optional
+`docker-compose.proxmox-ipv6.yml` overlay was applied successfully with a separate
+IPv6-enabled network for the API and Celery worker. The original IPv4 service
+network, PostgreSQL volumes, Redis and Keycloak remain intact; all seven
+CyberLab containers were running and the API database health endpoint returned
+HTTP 200 after deployment. An authenticated PVE 9.2.5 readiness check confirmed
+node `com`, `local-lvm`, isolated bridge `vmbr1`, stopped `cyberlab-base`
+template VMID `9002`, and required token permissions. Three earlier owned
+disposable smoke clones failed when QEMU guest-agent `exec-status` lost the
+process ID; all three were removed after verifying their identities. The
+Proxmox flag writer now uses guest-agent `file-write` followed by an exact
+`file-read` comparison, with invalid destination paths rejected before clone.
+**A subsequent opt-in live smoke succeeded:** uniquely named disposable VMID
+`103` cloned and started, its generated challenge flag matched the independent
+guest-file read-back, and the cleanup routine stopped/deleted the verified
+clone and confirmed VMID `103` absent. Guest IP remained `pending` on the
+isolated network. The full Python API suite passed **383 tests, 17 skipped,
+10 pre-existing warnings**; the focused Proxmox suite, Compose validation,
+Python compile check and Git diff check passed. This validates the staging
+Proxmox guest flag path, **not** real libvirt, Linux WireGuard connectivity,
+production SQL grants, browser login, crash recovery or a production rollout.
+
 October 31 Rust-owned lab reset lifecycle (not deployed): When the internal Rust core is configured, the existing public lab reset route preserves its FastAPI response and provider operations but delegates its authoritative reset transitions to `POST /v1/labs/reset/begin`, `/complete`, and `/fail`. Rust rechecks `lab.launch` and the actual lab owner or `lab.admin`, row-locks the current lab and validates the exact previous provider reference before recording a `resetting` claim and mandatory `lab.reset.begin` audit together. The Python orchestrator refuses to provision a replacement when old-resource removal fails; it prepares a fresh flag in a detached ORM instance and passes only confirmed new provider metadata to Rust. Rust atomically records the new running state, lease, flag digest/path, provider handle and `lab.reset` audit, or records failed state, remaining recoverable handle and `lab.reset.failure` audit. Known partially allocated replacements are stopped/removed where possible; failed cleanup keeps the reference for operator recovery. A lost completion response is checked against the database before any compensating removal. The standalone Python reset path remains supported. The restricted Rust writer needs only one additional column grant (`lab_instances.provider` UPDATE), not table-wide writes. Mock-provider/disposable-database regression coverage includes unauthorized and stale requests, successful reset, old-resource removal refusal, partial replacement cleanup refusal, restricted-column SQL and forced audit-insert rollback. **Remaining limitation:** a hard crash or lost failure-write response after a provider action can leave a claimed reset needing reconciliation; production role attestation, actual hypervisor guest-agent functionality, live provider isolation, and deployment remain unverified. Do not operate on the live Proxmox guests until a working guest-agent template is available.
 
 October 31 reset verification: **358 Python tests passed**, 17 opt-in skips and 10 existing warnings. All **17** isolated Rust HTTP/PostgreSQL integration tests passed, including the reset-specific checks above. **34 Rust unit tests passed**; Rust Clippy (`-D warnings`), `cargo fmt --check`, scoped Python Ruff and `git diff --check` passed. These results validate local code and disposable database behavior only. No live Proxmox guests were touched during this work.

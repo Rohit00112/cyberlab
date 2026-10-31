@@ -1,8 +1,9 @@
 """Lab lifecycle service (Phase 2 Cyber Range, PRD §46-§51).
 
-Labs are provisioned server-side into a per-user isolated bridge network.
-Students interact only through these endpoints — the Docker handle never
-leaves the API service (PRD §54 "No direct student access to infrastructure").
+Labs are provisioned server-side. Docker uses per-user isolated networks;
+Proxmox pool VNets remain staging-only until network access control is proven.
+Students interact only through these endpoints — provider handles never
+leave the API service (PRD §54 "No direct student access to infrastructure").
 """
 from __future__ import annotations
 
@@ -10,13 +11,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.flags import generate_lab_flag, guest_flag_command, hash_flag, lab_flag_command
 from app.core.lab_transitions import transition_lab
+from app.core.proxmox_sdn import parse_vnet_pool
 from app.core.states import ACTIVE_STATES, LabState
 from app.infrastructure import docker as docker_adapter
 from app.infrastructure.base import LabProvider, LabProviderError
@@ -27,6 +29,7 @@ from app.models.challenges import Challenge
 from app.models.labs import LabInstance
 from app.models.machine_templates import MachineTemplateVersion
 from app.models.provisioning import ProvisioningJob
+from app.models.proxmox_sdn_leases import ProxmoxSdnLease
 from app.models.users import User
 from app.schemas.lab import LabAdminOut, LabOut
 from app.services.users import record_audit
@@ -105,11 +108,40 @@ async def _start_container(lab: LabInstance, lab_cfg: dict) -> None:
     lab.container_name = name
     lab.flag_hash = hash_flag(flag)
     lab.flag_path = flag_path
-    lab.connection_hint = (
-        f"Container {name} is live at {ip} on isolated network {lab.network_name}. "
-        f"The flag for this session is written to {flag_path} inside the container. "
-        f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
-    )
+    if settings.lab_provider == "proxmox":
+        # The Proxmox provider currently ignores the per-user Docker network
+        # name and attaches every guest to one shared bridge/VNet. Never claim
+        # student isolation or call the guest a container.
+        pool = parse_vnet_pool(settings.proxmox_sdn_vnet_pool)
+        if pool:
+            lab.connection_hint = (
+                f"Staging VM {name} has IP {ip} on dedicated VNet "
+                f"{lab.network_name}. VPN and inter-VNet firewall policies "
+                "must be verified before student access. "
+                f"The flag is written to {flag_path} inside the VM. "
+                f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
+            )
+        else:
+            staging_network = settings.proxmox_sdn_vnet or settings.proxmox_bridge
+            lab.connection_hint = (
+                f"Staging VM {name} has IP {ip} on shared Proxmox network "
+                f"{staging_network}. This network is not approved for multi-student "
+                "access until per-user isolation and VPN rules are verified. "
+                f"The flag is written to {flag_path} inside the VM. "
+                f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
+            )
+    elif settings.lab_provider == "libvirt":
+        lab.connection_hint = (
+            f"Virtual machine {name} has IP {ip} on network {lab.network_name}. "
+            f"The flag is written to {flag_path} inside the VM. "
+            f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
+        )
+    else:
+        lab.connection_hint = (
+            f"Container {name} is live at {ip} on isolated network {lab.network_name}. "
+            f"The flag for this session is written to {flag_path} inside the container. "
+            f"Environment expires in {lab_cfg['expiry_minutes']} minutes."
+        )
 
 
 async def _to_out(
@@ -143,6 +175,72 @@ async def _to_out(
 
 def _network_name(user_id: uuid.UUID) -> str:
     return f"cyberlab-{str(user_id)[:8]}"
+
+
+async def _reserve_proxmox_sdn_vnet(db: AsyncSession, user_id: uuid.UUID) -> str:
+    """Reserve a pre-created VNet exclusively for one user under a PG lock.
+
+    A separate lease ledger survives deletion/cascade of lab rows and users.
+    Neither VM shutdown nor terminal status automatically releases a lease.
+    Only an operator-reviewed reclamation may reuse a VNet after proving all
+    prior VMs, routes and VPN privileges are gone.
+    """
+    settings = get_settings()
+    if settings.lab_provider != "proxmox":
+        return _network_name(user_id)
+    try:
+        pool = parse_vnet_pool(settings.proxmox_sdn_vnet_pool)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=f"Invalid SDN pool: {exc}") from exc
+    if not pool:
+        return _network_name(user_id)
+    if settings.proxmox_sdn_vnet:
+        raise HTTPException(status_code=503, detail="SDN pool conflicts with shared VNet")
+
+    # Serialize all pool reservations across API workers. Caller holds this
+    # transaction through lab row insertion, including queued provisioning.
+    await db.execute(text("SELECT pg_advisory_xact_lock(521874190)"))
+    historical_rows = (await db.execute(
+        select(LabInstance.user_id, LabInstance.network_name)
+        .where(LabInstance.network_name.in_(pool))
+    )).all()
+    lease_rows = (await db.execute(
+        select(ProxmoxSdnLease.vnet, ProxmoxSdnLease.user_id)
+        .where(ProxmoxSdnLease.vnet.in_(pool))
+    )).all()
+    assignments = {vnet: owner for vnet, owner in lease_rows}
+    if len(assignments) != len(lease_rows):
+        raise HTTPException(status_code=503, detail="Duplicate SDN lease entries")
+    for owner, vnet in historical_rows:
+        if vnet in assignments and assignments[vnet] != owner:
+            raise HTTPException(
+                status_code=503, detail="Conflicting historical SDN VNet assignments"
+            )
+        if vnet not in assignments:
+            # Backfill pre-ledger staging assignments before a user deletion
+            # could erase the only evidence that a network was occupied.
+            db.add(ProxmoxSdnLease(vnet=vnet, user_id=owner))
+            db.add(AuditLog(
+                event="proxmox.sdn.backfill", user_id=owner, target_id=vnet,
+                details={"owner_user_id": str(owner)},
+            ))
+        assignments[vnet] = owner
+    await db.flush()
+    owned = [vnet for vnet in pool if assignments.get(vnet) == user_id]
+    if len(owned) > 1:
+        raise HTTPException(status_code=503, detail="Ambiguous SDN VNet assignment")
+    if owned:
+        return owned[0]
+    for vnet in pool:
+        if vnet not in assignments:
+            db.add(ProxmoxSdnLease(vnet=vnet, user_id=user_id))
+            db.add(AuditLog(
+                event="proxmox.sdn.reserve", user_id=user_id, target_id=vnet,
+                details={"owner_user_id": str(user_id)},
+            ))
+            await db.flush()
+            return vnet
+    raise HTTPException(status_code=503, detail="No unassigned staging SDN VNet available")
 
 
 async def launch_lab(
@@ -218,13 +316,16 @@ async def launch_lab(
             ),
         )
 
+    network_name = await _reserve_proxmox_sdn_vnet(db, user.id)
+
     # If asynchronous launch requested:
     if not sync:
         lab = LabInstance(
             user_id=user.id,
             challenge_id=challenge.id,
             status=LabState.QUEUED.value,
-            network_name=_network_name(user.id),
+            network_name=network_name,
+            provider=settings.lab_provider,
         )
         db.add(lab)
         await db.flush()
@@ -272,7 +373,8 @@ async def launch_lab(
         user_id=user.id,
         challenge_id=challenge.id,
         status=LabState.PROVISIONING.value,
-        network_name=_network_name(user.id),
+        network_name=network_name,
+        provider=settings.lab_provider,
     )
     db.add(lab)
     await db.commit()

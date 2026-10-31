@@ -1,0 +1,21 @@
+# Opt-in: for a Proxmox HTTPS endpoint whose IPv4 route is broken but IPv6 works.
+# Keep the default IPv4 network intact for inter-service DNS; attach a separate
+# IPv6 bridge only to the API and worker. These two services are recreated.
+services:
+  api:
+    environment:
+      PROXMOX_FORCE_IPV6: "true"
+    networks:
+      - default
+      - proxmox_ipv6
+  celery-worker:
+    environment:
+      PROXMOX_FORCE_IPV6: "true"
+    networks:
+      - default
+      - proxmox_ipv6
+
+networks:
+  default:
+  proxmox_ipv6:
+    enable_ipv6: true

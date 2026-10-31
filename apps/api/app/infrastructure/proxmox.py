@@ -11,10 +11,13 @@ Requires Proxmox VE credentials in settings (env vars):
   - PROXMOX_STORAGE    → proxmox_storage
   - PROXMOX_BRIDGE     → proxmox_bridge
   - PROXMOX_VERIFY_SSL → proxmox_verify_ssl
+  - PROXMOX_FORCE_IPV6 → proxmox_force_ipv6 (opt-in IPv6-only API transport)
+  - PROXMOX_AGENT_WAIT_SECONDS → proxmox_agent_wait_seconds (default 300)
 """
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import re
 from typing import Any
@@ -23,8 +26,10 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from app.core.config import get_settings
-from app.core.flags import validate_guest_flag_command
+from app.core.flags import guest_flag_write_data
+from app.core.proxmox_sdn import parse_vnet_pool, validate_pool_subnet
 from app.infrastructure.base import LabProvider, LabProviderError
+from app.infrastructure.proxmox_http import make_proxmox_async_client
 
 logger = logging.getLogger("cyberlab.proxmox")
 
@@ -41,23 +46,47 @@ class ProxmoxLabProvider(LabProvider):
         self.api_url = settings.proxmox_endpoint.rstrip("/")
         self.node = settings.proxmox_node
         self.storage = settings.proxmox_storage
-        self.bridge = settings.proxmox_bridge
+        self.sdn_vnet = settings.proxmox_sdn_vnet.strip()
+        try:
+            self.sdn_pool = parse_vnet_pool(settings.proxmox_sdn_vnet_pool)
+        except ValueError as exc:
+            raise ProxmoxError(str(exc)) from exc
+        if self.sdn_pool and self.sdn_vnet:
+            raise ProxmoxError(
+                "Proxmox SDN pool and shared staging VNet cannot both be enabled"
+            )
+        self.bridge = self.sdn_vnet or settings.proxmox_bridge
         endpoint = urlsplit(self.api_url)
         if endpoint.scheme != "https" or not endpoint.hostname:
             raise ProxmoxError("Proxmox API endpoint must use HTTPS")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", self.node):
             raise ProxmoxError("Invalid Proxmox node name")
+        if self.sdn_vnet and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,7}", self.sdn_vnet):
+            raise ProxmoxError("Invalid Proxmox SDN VNet name")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}", self.bridge):
             raise ProxmoxError("Invalid Proxmox bridge name")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", self.storage):
             raise ProxmoxError("Invalid Proxmox storage identifier")
         self.verify_ssl = settings.proxmox_verify_ssl
+        self.force_ipv6 = settings.proxmox_force_ipv6
+        self.agent_wait_seconds = settings.proxmox_agent_wait_seconds
+        if not 30 <= self.agent_wait_seconds <= 900:
+            raise ProxmoxError("Proxmox agent wait must be 30..900 seconds")
         if settings.is_production and not self.verify_ssl:
             raise ProxmoxError("Proxmox TLS certificate verification is required in production")
         if settings.is_production and (
             not settings.proxmox_user or not settings.proxmox_token_uuid
         ):
             raise ProxmoxError("Proxmox API token credentials are required in production")
+        # The current provider connects all guests to one configured bridge or
+        # VNet. A per-user network_name from the lab service does not isolate
+        # those guests at L2, and no verified per-student VPN/firewall policy
+        # exists yet. Refuse production provisioning until that is implemented.
+        if settings.is_production:
+            raise ProxmoxError(
+                "Proxmox shared bridge/VNet is staging-only; per-student "
+                "SDN isolation and VPN/firewall enforcement are required for production"
+            )
         # PVE API token header: PVEAPIToken=user@realm!tokenname=token-uuid
         self.headers = {
             "Authorization": (
@@ -83,7 +112,9 @@ class ProxmoxLabProvider(LabProvider):
         params: dict | list[tuple[str, str]] | None = None,
     ) -> dict:
         url = f"{self.api_url}{path}"
-        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+        async with make_proxmox_async_client(
+            verify_ssl=self.verify_ssl, timeout=30, force_ipv6=self.force_ipv6
+        ) as client:
             try:
                 response = await client.request(
                     method, url,
@@ -155,18 +186,18 @@ class ProxmoxLabProvider(LabProvider):
             raise ProxmoxError("Proxmox task did not finish before the deadline") from exc
 
     async def _install_guest_flag(self, vmid: str, cmd: list[str]) -> None:
-        """Execute the one-shot writer through the QEMU guest agent and verify exit 0."""
+        """Write and read back the flag via QGA without a guest-exec PID race."""
         try:
-            validate_guest_flag_command(cmd)
+            flag_path, flag_content = guest_flag_write_data(cmd)
         except ValueError as exc:
             raise ProxmoxError("Invalid guest flag initializer") from exc
         base = f"/api2/json/nodes/{self.node}/qemu/{self._vmid(vmid)}/agent"
         last_ping_error: ProxmoxError | None = None
         try:
-            async with asyncio.timeout(120):
+            async with asyncio.timeout(self.agent_wait_seconds):
                 # A successful qmstart task means the hypervisor accepted the
                 # start request; the guest OS and qemu-guest-agent may still
-                # need time to boot before guest-exec becomes available.
+                # need time to boot before guest file operations are available.
                 while True:
                     try:
                         await self._request("POST", f"{base}/ping")
@@ -175,43 +206,38 @@ class ProxmoxLabProvider(LabProvider):
                         last_ping_error = exc
                         await asyncio.sleep(2)
 
-                # PVE declares command as an alist: repeated command query fields,
-                # avoiding a second shell or interpretation by the Proxmox host.
-                started = await self._request(
-                    "POST", f"{base}/exec",
-                    params=[("command", part) for part in cmd],
+                await self._request(
+                    "POST", f"{base}/file-write",
+                    json_data={"file": flag_path, "content": flag_content},
                 )
-                pid_data = started.get("result", started) if isinstance(started, dict) else None
-                pid = pid_data.get("pid") if isinstance(pid_data, dict) else None
-                if not isinstance(pid, int) or pid <= 0:
-                    raise ProxmoxError("QEMU guest agent did not return an exec PID")
-                while True:
-                    status_data = await self._request(
-                        "GET", f"{base}/exec-status", params={"pid": pid},
-                    )
-                    result = (
-                        status_data.get("result", status_data)
-                        if isinstance(status_data, dict) else None
-                    )
-                    if not isinstance(result, dict):
-                        raise ProxmoxError("Invalid guest exec status")
-                    if result.get("exited") is True:
-                        if result.get("exitcode") != 0:
-                            raise ProxmoxError("Guest flag initializer exited unsuccessfully")
-                        return
-                    await asyncio.sleep(0.5)
+                checked = await self._request(
+                    "GET", f"{base}/file-read", params={"file": flag_path},
+                )
+                content = checked.get("content") if isinstance(checked, dict) else None
+                if not isinstance(content, str) or not hmac.compare_digest(
+                    content, flag_content
+                ):
+                    raise ProxmoxError("Guest flag read-back did not match")
         except TimeoutError as exc:
             detail = f"; last agent error: {last_ping_error}" if last_ping_error else ""
             raise ProxmoxError(
-                f"Guest flag initialization exceeded 120 seconds{detail}"
+                f"Guest flag initialization exceeded {self.agent_wait_seconds} seconds{detail}"
             ) from exc
 
     async def ensure_network(self, name: str) -> None:
-        """Require an existing provider bridge before any VM is created.
+        """Require an existing staging bridge before any VM is created.
 
-        Dynamic per-user network names belong to Docker; Proxmox guests attach
-        to the configured node bridge, which must be provisioned separately.
+        The per-user name is only a Docker network identifier. Proxmox guests
+        currently share one bridge/VNet, so this must not be used in production.
         """
+        if self.sdn_pool:
+            if name not in self.sdn_pool:
+                raise ProxmoxError("Requested Proxmox SDN VNet is not in the approved pool")
+            await self._require_sdn_vnet(name)
+            return
+        if self.sdn_vnet:
+            await self._require_sdn_vnet()
+            return
         bridge = self.bridge or name
         try:
             await self._request(
@@ -221,6 +247,56 @@ class ProxmoxLabProvider(LabProvider):
             raise ProxmoxError(
                 f"Proxmox bridge {bridge!r} on node {self.node!r} is unavailable; "
                 "configure it before provisioning"
+            ) from exc
+
+    async def _require_sdn_vnet(self, vnet_name: str | None = None) -> None:
+        """Fail closed unless the VNet is live in its SDN zone on this node.
+
+        Generated SDN bridges appear under /nodes/{node}/sdn/zones, not
+        necessarily under the ordinary /nodes/{node}/network inventory.
+        """
+        vnet_name = vnet_name or self.sdn_vnet
+        vnet = quote(vnet_name, safe="")
+        try:
+            definition = await self._request("GET", f"/api2/json/cluster/sdn/vnets/{vnet}")
+            zone = definition.get("zone") if isinstance(definition, dict) else None
+            if (
+                not isinstance(definition, dict)
+                or definition.get("vnet") != vnet_name
+                or not isinstance(zone, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", zone)
+            ):
+                raise ProxmoxError("SDN VNet definition is missing or invalid")
+            status = await self._request(
+                "GET", f"/api2/json/nodes/{self.node}/sdn/zones"
+            )
+            if not isinstance(status, list) or not any(
+                isinstance(item, dict)
+                and item.get("zone") == zone
+                and item.get("status") == "available"
+                for item in status
+            ):
+                raise ProxmoxError("SDN zone is not available on this node")
+            bridges = await self._request(
+                "GET", f"/api2/json/nodes/{self.node}/sdn/zones/{quote(zone, safe='')}/bridges"
+            )
+            if not isinstance(bridges, list) or not any(
+                isinstance(item, dict) and item.get("name") == vnet_name
+                for item in bridges
+            ):
+                raise ProxmoxError("SDN VNet bridge is not active in its zone")
+            if self.sdn_pool:
+                subnets = await self._request(
+                    "GET", f"/api2/json/cluster/sdn/vnets/{vnet}/subnets"
+                )
+                try:
+                    validate_pool_subnet(subnets)
+                except ValueError as exc:
+                    raise ProxmoxError(str(exc)) from exc
+        except ProxmoxError as exc:
+            raise ProxmoxError(
+                f"Proxmox SDN VNet {vnet_name!r} is not configured and applied "
+                f"on node {self.node!r}; refuse to provision"
             ) from exc
 
     async def _verify_clone_prerequisites(self, template_vmid: str) -> None:
@@ -277,11 +353,17 @@ class ProxmoxLabProvider(LabProvider):
         """
         if cmd:
             try:
-                validate_guest_flag_command(cmd)
+                guest_flag_write_data(cmd)
             except ValueError as exc:
                 raise ProxmoxError(
                     "Invalid guest flag command; cannot install a per-lab challenge flag"
                 ) from exc
+        if self.sdn_pool:
+            if network not in self.sdn_pool:
+                raise ProxmoxError("Requested Proxmox SDN VNet is not in the approved pool")
+            await self._require_sdn_vnet(network)
+        elif self.sdn_vnet:
+            await self._require_sdn_vnet()
         template_vmid = self._vmid(image)
         # Get next available VMID
         next_id_data = await self._request(
@@ -307,7 +389,7 @@ class ProxmoxLabProvider(LabProvider):
         # Configure resources. Proxmox VMs attach to a physical/SDN bridge;
         # the per-user Docker-style network name cannot be used directly.
         # Prefer the configured bridge over the passed-in network name.
-        bridge = self.bridge or network
+        bridge = network if self.sdn_pool else (self.bridge or network)
         config_params: dict[str, Any] = {}
         if cpu_limit:
             config_params["cores"] = max(1, int(cpu_limit))

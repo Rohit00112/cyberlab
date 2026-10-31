@@ -147,10 +147,19 @@ async def execute_provisioning_job(job_id_str: str) -> bool:
             )
             created_ref = provider_ref
 
-            connection_hint = (
-                f"Target {container_name} is running at {ip} on network {lab.network_name}. "
-                f"Flag location: {flag_path}. Lease valid for {expiry_minutes} minutes."
-            )
+            if lab.provider == "proxmox":
+                connection_hint = (
+                    f"Staging VM {container_name} has IP {ip} on Proxmox "
+                    f"network {lab.network_name}. VPN and inter-VNet firewall "
+                    "rules must be verified before student access. "
+                    f"Flag location: {flag_path}. Lease valid for {expiry_minutes} minutes."
+                )
+            else:
+                connection_hint = (
+                    f"Target {container_name} is running at {ip} "
+                    f"on network {lab.network_name}. Flag location: {flag_path}. "
+                    f"Lease valid for {expiry_minutes} minutes."
+                )
             if rust_managed:
                 from app.core.rust_engine import complete_provisioning_job_in_rust
 
