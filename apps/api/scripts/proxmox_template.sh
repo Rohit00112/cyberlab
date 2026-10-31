@@ -1,101 +1,120 @@
 #!/usr/bin/env bash
-# Build a reusable CyberLab base VM template on a Proxmox VE node.
-#
-# Designed to run ON the PVE host as root (no SSH is required from the API host).
-# It:
-#   1. verifies the configured storage + Linux bridge exist (bails with a clear
-#      message otherwise),
-#   2. downloads a cloud image (Debian by default),
-#   3. creates a VM with a cloud-init drive + qemu-guest-agent,
-#   4. boots it once so cloud-init initializes (installs qemu-guest-agent if the
-#      image does not ship it), then shuts it down,
-#   5. converts the VM to a template at the requested VMID.
-#
-# After the build, set LAB_IMAGE=<vmid> in the API's .env (already "9000").
-#
-# Usage:
-#   sudo ./scripts/proxmox_template.sh            # all defaults
-#   sudo PVMID=9002 PM_BRIDGE=vmbr2 ./scripts/proxmox_template.sh
-#
-# Variables (all optional):
-#   PVMID        template VMID                     (default: 9000)
-#   PM_NAME      template name                     (default: cyberlab-base)
-#   PM_STORAGE   storage for the clone            (default: local-lvm)
-#   PM_BRIDGE    Linux bridge for net0            (default: vmbr1)
-#   PM_MEMORY    RAM MiB                          (default: 2048)
-#   PM_CORES     vCPUs                            (default: 2)
-#   PM_DISK_GB   disk size in GiB                 (default: 8)
-#   PM_IMAGE_URL cloud image to download           (default: Debian 13 genericcloud amd64)
-#   PM_CI_USER   cloud-init login user            (default: admin)
-#   PM_CI_PASS   cloud-init password (optional)
-#   PM_SSH_KEY   path to a public key to install  (optional)
-#   PM_AGENT     "1" install qemu-guest-agent on first boot (default: 1)
+# Build a *new* CyberLab base template on a Proxmox host, never overwriting
+# an existing VM. Run as root on the PVE node with an isolated PM_BRIDGE.
+# An explicit VMID and a Cloud-Init login method are required. Never pass
+# sensitive passwords in a checked-in file or publish a reusable password.
+# Example (SSH key recommended):
+#   sudo PVMID=9002 PM_BRIDGE=vmbr2 PM_SSH_KEY=/root/.ssh/id_ed25519.pub \
+#     ./scripts/proxmox_template.sh
+# Optional: PM_CI_PASS (console login), PM_DISK_GB (default 8),
+# PM_IMAGE_CACHE_DIR, PM_IMAGE_URL, PM_IMAGE_SHA512 (pinned image checksum),
+# PM_AGENT_WAIT_SECONDS (default 300), PM_NAME, PM_STORAGE, PM_MEMORY, PM_CORES.
+# The script installs the agent into a *copy* of the cloud image using
+# virt-customize, verifies it in a running guest, cleans Cloud-Init, and only
+# then converts the stopped VM to a template. On failure the VM is preserved
+# for inspection (no automatic deletion). Never run against an existing VMID.
 set -euo pipefail
 
-PVMID="${PVMID:-9000}"
+PVMID="${PVMID:-}"
 PM_NAME="${PM_NAME:-cyberlab-base}"
 PM_STORAGE="${PM_STORAGE:-local-lvm}"
-PM_BRIDGE="${PM_BRIDGE:-vmbr1}"
+PM_BRIDGE="${PM_BRIDGE:-}"
 PM_MEMORY="${PM_MEMORY:-2048}"
 PM_CORES="${PM_CORES:-2}"
 PM_DISK_GB="${PM_DISK_GB:-8}"
 PM_IMAGE_URL="${PM_IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2}"
+PM_IMAGE_CACHE_DIR="${PM_IMAGE_CACHE_DIR:-/var/lib/vz/template/iso}"
+PM_IMAGE_SHA512="${PM_IMAGE_SHA512:-}"
 PM_CI_USER="${PM_CI_USER:-admin}"
 PM_CI_PASS="${PM_CI_PASS:-}"
 PM_SSH_KEY="${PM_SSH_KEY:-}"
-PM_AGENT="${PM_AGENT:-1}"
+PM_AGENT_WAIT_SECONDS="${PM_AGENT_WAIT_SECONDS:-300}"
 
 IMG_NAME="${PM_IMAGE_URL##*/}"
-IMG_PATH="/var/lib/vz/template/iso/${IMG_NAME}"
+IMG_PATH="${PM_IMAGE_CACHE_DIR}/${IMG_NAME}"
 
 log() { printf '[proxmox-template] %s\n' "$*"; }
 die() { printf '[proxmox-template] ERROR: %s\n' "$*" >&2; exit 1; }
 
-for tool in qm pvesm ip curl; do
+for tool in qm pvesm ip curl virt-customize sha512sum; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool: '$tool' (run this script on the Proxmox node as root)"
 done
 [[ "$(id -u)" -eq 0 ]] || die "must run as root on the Proxmox node"
+[[ "$PVMID" =~ ^[1-9][0-9]{2,8}$ ]] || die "set PVMID to a new, explicitly chosen numeric VMID (not 9000)"
+[[ -n "$PM_BRIDGE" && "$PM_BRIDGE" =~ ^[a-zA-Z0-9_.:-]+$ ]] || die "set PM_BRIDGE to the approved, isolated lab bridge"
+[[ "$PM_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] || die "invalid PM_NAME"
+[[ "$PM_CI_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid PM_CI_USER"
+if [[ ! "$PM_DISK_GB" =~ ^[0-9]+$ ]] || (( PM_DISK_GB < 8 || PM_DISK_GB > 256 )); then
+    die "PM_DISK_GB must be 8..256"
+fi
+if [[ ! "$PM_AGENT_WAIT_SECONDS" =~ ^[0-9]+$ ]] || (( PM_AGENT_WAIT_SECONDS < 5 || PM_AGENT_WAIT_SECONDS > 900 )); then
+    die "PM_AGENT_WAIT_SECONDS must be 5..900"
+fi
+[[ "$PM_IMAGE_URL" == https://* && "$IMG_NAME" =~ ^[a-zA-Z0-9._-]+\.qcow2$ ]] || die "PM_IMAGE_URL must be HTTPS and end in a safe .qcow2 filename"
+if [[ -z "$PM_CI_PASS" && -z "$PM_SSH_KEY" ]]; then
+    die "configure PM_SSH_KEY (recommended) or PM_CI_PASS before provisioning a VM"
+fi
+if [[ -n "$PM_SSH_KEY" && ! -r "$PM_SSH_KEY" ]]; then
+    die "PM_SSH_KEY must name a readable SSH public key"
+fi
+if [[ -n "$PM_IMAGE_SHA512" && ! "$PM_IMAGE_SHA512" =~ ^[a-fA-F0-9]{128}$ ]]; then
+    die "PM_IMAGE_SHA512 must be a 128-character hex digest"
+fi
+if qm status "$PVMID" >/dev/null 2>&1; then
+    die "VMID $PVMID already exists; choose a different VMID. Existing VMs are never overwritten"
+fi
 
-# --- 1. Storage ---
+# Storage and bridge must be inspected and selected by the administrator.
 if ! pvesm status -content images 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$PM_STORAGE"; then
     die "storage '$PM_STORAGE' not found (content=images). Create it in Datacenter > Storage, or set PM_STORAGE."
 fi
 log "storage '$PM_STORAGE' ok"
 
-# --- 2. Bridge ---
 if ! ip link show "$PM_BRIDGE" >/dev/null 2>&1; then
     die "bridge '$PM_BRIDGE' not found. Create it in the node's Network tab, or set PM_BRIDGE."
 fi
-log "bridge '$PM_BRIDGE' ok"
+log "bridge '$PM_BRIDGE' exists; confirm its network isolation before proceeding"
 
-# --- 3. Cloud image ---
-mkdir -p "$(dirname "$IMG_PATH")"
+# Keep a pristine cached image; customize only a throwaway copy. The temp
+# directory is generated by mktemp and contains exactly one known work file.
+mkdir -p "$PM_IMAGE_CACHE_DIR"
+BUILD_DIR=""
+DOWNLOAD_TMP=""
+cleanup() {
+    if [[ -n "$DOWNLOAD_TMP" && -f "$DOWNLOAD_TMP" ]]; then
+        rm -f -- "$DOWNLOAD_TMP"
+    fi
+    if [[ -n "$BUILD_DIR" && -d "$BUILD_DIR" ]]; then
+        rm -f -- "$BUILD_DIR/$IMG_NAME"
+        rmdir -- "$BUILD_DIR"
+    fi
+}
+trap cleanup EXIT
+
 if [[ -f "$IMG_PATH" ]]; then
     log "using existing image $IMG_PATH"
 else
     log "downloading $PM_IMAGE_URL"
-    curl -fL --retry 3 -o "$IMG_PATH.tmp" "$PM_IMAGE_URL"
-    mv "$IMG_PATH.tmp" "$IMG_PATH"
+    DOWNLOAD_TMP="$(mktemp "$PM_IMAGE_CACHE_DIR/.cyberlab-download.XXXXXXXX")"
+    curl -fL --retry 3 -o "$DOWNLOAD_TMP" "$PM_IMAGE_URL"
+    if [[ ! -e "$IMG_PATH" ]]; then
+        mv -- "$DOWNLOAD_TMP" "$IMG_PATH"
+        DOWNLOAD_TMP=""
+    fi
 fi
-
-# --- 3b. Bake qemu-guest-agent into the image (offline, reliable) ---
-AGENT_BAKED=0
-if command -v virt-customize >/dev/null 2>&1; then
-    log "baking qemu-guest-agent into ${IMG_NAME} (virt-customize)"
-    virt-customize -a "$IMG_PATH" \
-        --install qemu-guest-agent \
-        --truncate /etc/machine-id \
-        || die "virt-customize failed (node likely needs internet for apt)"
-    AGENT_BAKED=1
+if [[ -n "$PM_IMAGE_SHA512" ]]; then
+    printf '%s  %s\n' "$PM_IMAGE_SHA512" "$IMG_PATH" | sha512sum --check --status || die "cloud image SHA512 does not match"
 else
-    log "WARNING: libguestfs-tools (virt-customize) not installed."
-    log "         Falling back to a boot-once pass to enable qemu-guest-agent."
+    log "WARNING: no PM_IMAGE_SHA512 pin supplied; verify image provenance before production use"
 fi
+BUILD_DIR="$(mktemp -d "$PM_IMAGE_CACHE_DIR/.cyberlab-build.XXXXXXXX")"
+WORK_IMAGE="$BUILD_DIR/$IMG_NAME"
+cp -- "$IMG_PATH" "$WORK_IMAGE"
 
-# --- 4. Create the VM ---
-if qm status "$PVMID" >/dev/null 2>&1; then
-    die "VMID $PVMID already exists — refuse to overwrite. Pick a free VMID via PVMID=..."
-fi
+log "installing qemu-guest-agent into a private cloud-image copy"
+virt-customize -a "$WORK_IMAGE" --install qemu-guest-agent --truncate /etc/machine-id \
+    || die "virt-customize failed; install libguestfs-tools and verify host package-mirror access"
+
 log "creating VM $PVMID ($PM_NAME)"
 qm create "$PVMID" \
     --name "$PM_NAME" \
@@ -105,12 +124,16 @@ qm create "$PVMID" \
     --net0 "virtio,bridge=${PM_BRIDGE}" \
     --agent enabled=1,fstrim_cloned_disks=1
 
-log "importing cloud image disk"
-qm importdisk "$PVMID" "$IMG_PATH" "$PM_STORAGE"
+log "importing agent-enabled cloud image disk"
+qm importdisk "$PVMID" "$WORK_IMAGE" "$PM_STORAGE"
+
+# Query the actual imported volume instead of guessing Proxmox's disk name.
+IMPORTED_DISK="$(qm config "$PVMID" | awk -F ': ' '/^unused[0-9]+:/ {split($2, parts, ","); print parts[1]}')"
+[[ -n "$IMPORTED_DISK" && "$IMPORTED_DISK" != *$'\n'* && "$IMPORTED_DISK" == "$PM_STORAGE:"* ]] || die "could not identify exactly one imported disk; VM $PVMID needs manual inspection"
 
 log "attaching disk + cloud-init drive"
 qm set "$PVMID" \
-    --scsi0 "${PM_STORAGE}:vm-${PVMID}-disk-0" \
+    --scsi0 "$IMPORTED_DISK" \
     --ide2 "${PM_STORAGE}:cloudinit" \
     --boot order=scsi0 \
     --serial0 socket \
@@ -124,33 +147,48 @@ fi
 if [[ -n "$PM_SSH_KEY" && -f "$PM_SSH_KEY" ]]; then
     qm set "$PVMID" --sshkeys "$PM_SSH_KEY"
 fi
+log "resizing boot disk to ${PM_DISK_GB}G"
+qm resize "$PVMID" scsi0 "${PM_DISK_GB}G"
 
-# --- 5. Boot-once fallback (only when the agent was NOT baked in) ---
-if [[ "$AGENT_BAKED" -eq 0 && "$PM_AGENT" == "1" ]]; then
-    log "starting VM $PVMID for a one-time cloud-init pass"
-    qm start "$PVMID"
-    printf '[proxmox-template] waiting for qemu-guest-agent'
-    agent_ok=0
-    for _ in $(seq 1 60); do
-        if qm guest cmd "$PVMID" ping >/dev/null 2>&1; then agent_ok=1; break; fi
-        printf '.'
-        sleep 5
-    done
-    printf '\n'
-    if [[ "$agent_ok" -eq 1 ]]; then
-        log "qemu-guest-agent is responding"
-    else
-        log "stopping VM — refusing to create a template without an agent"
-        qm stop "$PVMID" >/dev/null 2>&1 || true
-        die "qemu-guest-agent never came up. Install libguestfs-tools and re-run, or bake the agent yourself: virt-customize -a $IMG_PATH --install qemu-guest-agent"
+log "starting VM $PVMID to verify the installed agent"
+qm start "$PVMID"
+agent_waited=0
+until qm guest cmd "$PVMID" ping >/dev/null 2>&1; do
+    if (( agent_waited >= PM_AGENT_WAIT_SECONDS )); then
+        die "guest agent failed after ${PM_AGENT_WAIT_SECONDS}s; VM $PVMID remains for manual inspection, no template created"
     fi
-    log "shutting VM $PVMID down"
-    qm shutdown "$PVMID" --timeout 120 >/dev/null 2>&1 || qm stop "$PVMID" >/dev/null 2>&1
-    while qm status "$PVMID" | grep -q running; do sleep 2; done
-fi
+    sleep 5
+    agent_waited=$((agent_waited + 5))
+done
+log "guest agent responded on VM $PVMID"
 
-# --- 6. Convert to template ---
-if [[ "$AGENT_BAKED" -eq 1 ]]; then agent_tag="qemu-guest-agent baked-in"; else agent_tag="qemu-guest-agent via boot"; fi
+# qm guest exec returns a JSON result; the CLI can exit successfully even
+# when the command inside the guest failed. Require its explicit exitcode=0.
+guest_exec_checked() {
+    local result
+    result="$(qm guest exec "$PVMID" --timeout 180 -- "$@")" || die "guest command invocation failed on VM $PVMID"
+    if ! printf '%s\n' "$result" | grep -Eq '"exitcode"[[:space:]]*:[[:space:]]*0([,}[:space:]]|$)'; then
+        die "guest command did not exit successfully on VM $PVMID: $result"
+    fi
+}
+
+log "waiting for Cloud-Init to finish before preparing a reusable image"
+guest_exec_checked /usr/bin/cloud-init status --wait
+log "removing Cloud-Init instance cache and regenerating machine ID on next boot"
+guest_exec_checked /usr/bin/cloud-init clean --logs --machine-id
+# Remove per-VM SSH server host keys so each future clone generates its own.
+guest_exec_checked /bin/sh -c 'rm -f /etc/ssh/ssh_host_*'
+
+log "shutting down verified VM $PVMID"
+qm shutdown "$PVMID" --timeout 120 || die "shutdown failed; VM $PVMID left for manual inspection"
+stopped=0
+for _ in $(seq 1 60); do
+    if qm status "$PVMID" | grep -q 'stopped'; then stopped=1; break; fi
+    sleep 2
+done
+[[ "$stopped" -eq 1 ]] || die "VM $PVMID did not stop; refusing to convert a running VM"
+
+log "converting verified, stopped VM $PVMID into a template"
 qm template "$PVMID"
-log "DONE: template VMID=$PVMID '$PM_NAME' ($agent_tag)"
-log "now set LAB_IMAGE=${PVMID} in the API .env and restart the API"
+log "DONE: template VMID=$PVMID '$PM_NAME' (guest agent verified)"
+log "Set LAB_IMAGE=${PVMID} in the API .env after reviewing clone access and bridge isolation"

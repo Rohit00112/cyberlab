@@ -63,6 +63,46 @@ production `.env` values before deployment. Configure the public API, frontend
 and Keycloak URLs consistently; changing `.env` alone does not change the
 hardcoded production Compose or Caddy hostnames.
 
+### Proxmox template preparation (operator action, staging only)
+
+The repository script `apps/api/scripts/proxmox_template.sh` must be copied to
+and run **on the Proxmox node**, not on the Mac API host. It is a new-template
+builder, not an in-place repair tool: choose a fresh numeric `PVMID` and an
+approved isolated `PM_BRIDGE`. **Do not run it with an existing VMID** (in the
+current lab, `9000` is the original template and VM `108` is an active
+CyberLab-owned lab). Confirm capacity, storage and isolation first.
+
+The host needs `libguestfs-tools` (`virt-customize`), `qm`, `pvesm`, `ip`,
+`curl` and `sha512sum`. Use an SSH public key as the temporary Cloud-Init login
+method, or explicitly supply `PM_CI_PASS` for console login. With neither,
+the script refuses to create a VM. Avoid inherited/static template passwords
+for production labs; review or replace clone credentials as part of rollout.
+
+```bash
+# Run on the Proxmox node, from the folder containing the current script:
+sudo PVMID=YOUR_UNUSED_VMID PM_BRIDGE=YOUR_ISOLATED_BRIDGE \
+  PM_SSH_KEY=/root/.ssh/id_ed25519.pub \
+  ./proxmox_template.sh
+```
+
+The script copies the upstream Debian cloud image before modifying it, bakes
+in `qemu-guest-agent`, imports and resizes the disk, boots the unique VM, and
+requires a successful `qm guest cmd <UNUSED_VMID> ping`. It waits for Cloud-Init,
+clears per-instance Cloud-Init state, machine identity and SSH host keys via
+the verified guest-agent channel, shuts down, then converts the VM to a
+template. If any check fails, **no template is created**, and the newly
+allocated VM is left available for manual, ownership-verified inspection; it
+will not delete or overwrite another guest. Set `PM_IMAGE_SHA512` to a trusted
+pinned image hash to validate the downloaded image; without one the script
+warns, and its default image URL uses HTTPS.
+
+After a successful build, set `LAB_IMAGE` to the new template VMID in the API
+configuration and run the read-only `scripts.proxmox_check` readiness check.
+Only after the intended bridge, API token permissions and guest isolation are
+verified should an operator opt into `scripts.proxmox_smoke --run`; that test
+creates and then attempts to remove one owned disposable clone. Never run the
+live smoke test as part of the normal Python unit suite.
+
 ## Observability (PRD §47)
 
 - Every request logs one JSON line (request id, method, path, status, duration).
